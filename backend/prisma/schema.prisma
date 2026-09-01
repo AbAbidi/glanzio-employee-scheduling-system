@@ -1,0 +1,298 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  EMPLOYEE
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  INACTIVE
+}
+
+enum AssignmentStatus {
+  DRAFT
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum RecurrenceFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum NotificationType {
+  ASSIGNMENT_CREATED
+  ASSIGNMENT_UPDATED
+  ASSIGNMENT_CANCELLED
+  STUDENT_HOUR_WARNING
+}
+
+model User {
+  id                  String               @id @default(uuid()) @db.Uuid
+  email               String               @unique @db.VarChar(320)
+  passwordHash        String?
+  role                UserRole
+  status              UserStatus           @default(ACTIVE)
+  failedLoginAttempts Int                  @default(0)
+  lockedUntil         DateTime?            @db.Timestamptz(3)
+  passwordChangedAt   DateTime?            @db.Timestamptz(3)
+  lastLoginAt         DateTime?            @db.Timestamptz(3)
+  createdAt           DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime             @updatedAt @db.Timestamptz(3)
+  employee            Employee?
+  refreshSessions     RefreshSession[]
+  passwordResetTokens PasswordResetToken[]
+  receivedInvitations AccountInvitation[]  @relation("InvitationRecipient")
+  createdInvitations  AccountInvitation[]  @relation("InvitationCreator")
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  createdAssignments  WorkAssignment[]     @relation("AssignmentCreatedBy")
+  updatedAssignments  WorkAssignment[]     @relation("AssignmentUpdatedBy")
+  recurringTemplates  RecurringTemplate[]  @relation("RecurringTemplateCreatedBy")
+
+  @@index([status])
+  @@index([lockedUntil])
+}
+
+model Employee {
+  id                     String                      @id @default(uuid()) @db.Uuid
+  userId                 String                      @unique @db.Uuid
+  firstName              String                      @db.VarChar(100)
+  lastName               String                      @db.VarChar(100)
+  phone                  String?                     @db.VarChar(30)
+  hourlyRate             Decimal?                    @db.Decimal(10, 2)
+  isStudent              Boolean                     @default(false)
+  active                 Boolean                     @default(true)
+  createdAt              DateTime                    @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                    @updatedAt @db.Timestamptz(3)
+  user                   User                        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  assignmentLinks        AssignmentEmployee[]
+  recurringTemplateLinks RecurringTemplateEmployee[]
+
+  @@index([active])
+  @@index([isStudent, active])
+  @@index([lastName, firstName])
+}
+
+model Client {
+  id          String         @id @default(uuid()) @db.Uuid
+  companyName String         @db.VarChar(200)
+  contactName String?        @db.VarChar(200)
+  email       String?        @db.VarChar(320)
+  phone       String?        @db.VarChar(30)
+  notes       String?
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime       @updatedAt @db.Timestamptz(3)
+  sites       CleaningSite[]
+
+  @@index([active])
+  @@index([companyName])
+}
+
+model CleaningSite {
+  id                       String              @id @default(uuid()) @db.Uuid
+  clientId                 String              @db.Uuid
+  name                     String              @db.VarChar(200)
+  addressLine1             String              @db.VarChar(250)
+  addressLine2             String?             @db.VarChar(250)
+  postalCode               String?             @db.VarChar(30)
+  city                     String              @db.VarChar(120)
+  countryCode              String              @default("FR") @db.Char(2)
+  latitude                 Decimal?            @db.Decimal(9, 6)
+  longitude                Decimal?            @db.Decimal(9, 6)
+  estimatedDurationMinutes Int?
+  requiredEquipment        String[]            @default([])
+  notes                    String?
+  active                   Boolean             @default(true)
+  createdAt                DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime            @updatedAt @db.Timestamptz(3)
+  client                   Client              @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  assignments              WorkAssignment[]
+  recurringTemplates       RecurringTemplate[]
+
+  @@index([clientId, active])
+  @@index([city])
+  @@index([name])
+}
+
+model WorkAssignment {
+  id                     String               @id @default(uuid()) @db.Uuid
+  siteId                 String               @db.Uuid
+  recurringTemplateId    String?              @db.Uuid
+  title                  String               @db.VarChar(200)
+  startAt                DateTime             @db.Timestamptz(3)
+  endAt                  DateTime             @db.Timestamptz(3)
+  status                 AssignmentStatus     @default(SCHEDULED)
+  notes                  String?
+  cancellationReason     String?
+  departureAddress       String?              @db.VarChar(500)
+  departureLatitude      Decimal?             @db.Decimal(9, 6)
+  departureLongitude     Decimal?             @db.Decimal(9, 6)
+  travelDistanceMeters   Int?
+  estimatedTravelMinutes Int?
+  clientCharge           Decimal?             @db.Decimal(12, 2)
+  routeCalculatedAt      DateTime?            @db.Timestamptz(3)
+  createdById            String               @db.Uuid
+  updatedById            String?              @db.Uuid
+  createdAt              DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime             @updatedAt @db.Timestamptz(3)
+  site                   CleaningSite         @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  recurringTemplate      RecurringTemplate?   @relation(fields: [recurringTemplateId], references: [id], onDelete: SetNull)
+  employees              AssignmentEmployee[]
+  notifications          Notification[]
+  createdBy              User                 @relation("AssignmentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedBy              User?                @relation("AssignmentUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([siteId, startAt])
+  @@index([status, startAt])
+  @@index([startAt, endAt])
+  @@index([recurringTemplateId])
+}
+
+model AssignmentEmployee {
+  assignmentId     String         @db.Uuid
+  employeeId       String         @db.Uuid
+  assignedAt       DateTime       @default(now()) @db.Timestamptz(3)
+  agreedHourlyRate Decimal?       @db.Decimal(10, 2)
+  rateOverridden   Boolean        @default(false)
+  assignment       WorkAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  employee         Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@id([assignmentId, employeeId])
+  @@index([employeeId])
+}
+
+model RecurringTemplate {
+  id                     String                      @id @default(uuid()) @db.Uuid
+  siteId                 String                      @db.Uuid
+  title                  String                      @db.VarChar(200)
+  frequency              RecurrenceFrequency
+  interval               Int                         @default(1)
+  daysOfWeek             Int[]                       @default([])
+  firstStartAt           DateTime                    @db.Timestamptz(3)
+  durationMinutes        Int
+  untilAt                DateTime?                   @db.Timestamptz(3)
+  occurrenceCount        Int?
+  notes                  String?
+  departureAddress       String?                     @db.VarChar(500)
+  departureLatitude      Decimal?                    @db.Decimal(9, 6)
+  departureLongitude     Decimal?                    @db.Decimal(9, 6)
+  travelDistanceMeters   Int?
+  estimatedTravelMinutes Int?
+  clientCharge           Decimal?                     @db.Decimal(12, 2)
+  routeCalculatedAt      DateTime?                   @db.Timestamptz(3)
+  active                 Boolean                     @default(true)
+  createdById            String                      @db.Uuid
+  createdAt              DateTime                    @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                    @updatedAt @db.Timestamptz(3)
+  site                   CleaningSite                @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  employees              RecurringTemplateEmployee[]
+  assignments            WorkAssignment[]
+  createdBy              User                        @relation("RecurringTemplateCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([siteId, active])
+  @@index([active, firstStartAt])
+}
+
+model RecurringTemplateEmployee {
+  recurringTemplateId String            @db.Uuid
+  employeeId          String            @db.Uuid
+  agreedHourlyRate    Decimal?          @db.Decimal(10, 2)
+  rateOverridden      Boolean           @default(false)
+  recurringTemplate   RecurringTemplate @relation(fields: [recurringTemplateId], references: [id], onDelete: Cascade)
+  employee            Employee          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@id([recurringTemplateId, employeeId])
+  @@index([employeeId])
+}
+
+model Notification {
+  id           String           @id @default(uuid()) @db.Uuid
+  userId       String           @db.Uuid
+  assignmentId String?          @db.Uuid
+  type         NotificationType
+  title        String           @db.VarChar(200)
+  message      String
+  readAt       DateTime?        @db.Timestamptz(3)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignment   WorkAssignment?  @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt, createdAt])
+  @@index([assignmentId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String   @db.VarChar(100)
+  entityType  String   @db.VarChar(100)
+  entityId    String   @db.VarChar(100)
+  metadata    Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  actor       User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId, createdAt])
+}
+
+model RefreshSession {
+  id           String          @id @default(uuid()) @db.Uuid
+  userId       String          @db.Uuid
+  tokenHash    String          @unique
+  familyId     String          @db.Uuid
+  expiresAt    DateTime        @db.Timestamptz(3)
+  revokedAt    DateTime?       @db.Timestamptz(3)
+  replacedById String?         @unique @db.Uuid
+  createdAt    DateTime        @default(now()) @db.Timestamptz(3)
+  lastUsedAt   DateTime?       @db.Timestamptz(3)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy   RefreshSession? @relation("RefreshSessionRotation", fields: [replacedById], references: [id])
+  replaces     RefreshSession? @relation("RefreshSessionRotation")
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz(3)
+  usedAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AccountInvitation {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  createdById String    @db.Uuid
+  tokenHash   String    @unique
+  expiresAt   DateTime  @db.Timestamptz(3)
+  acceptedAt  DateTime? @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  user        User      @relation("InvitationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy   User      @relation("InvitationCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}

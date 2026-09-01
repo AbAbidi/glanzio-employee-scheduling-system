@@ -1,0 +1,40 @@
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+**/node_modules/
+
+# Build results and caches
+**/dist/
+**/coverage/
+**/.next/
+**/.vinext/
+**/.wrangler/
+*.tsbuildinfo
+
+# Generated Prisma client
+backend/src/generated/prisma/
+
+# Cypress-generated evidence
+frontend/cypress/videos/
+frontend/cypress/screenshots/
+frontend/cypress/downloads/
+
+# Local development tools and temporary output
+.agents/
+.codex-video-tools/
+.tmp/
+tmp/
+output/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
