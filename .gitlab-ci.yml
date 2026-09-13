@@ -1,0 +1,32 @@
+default:
+  image: node:22-bookworm
+
+stages:
+  - verify
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+backend_verify:
+  stage: verify
+  variables:
+    DATABASE_URL: "postgresql://ci:ci@localhost:5432/esms_ci"
+  before_script:
+    - cd backend
+    - npm ci
+  script:
+    - npm run prisma:generate
+    - npm exec -- eslint "{src,apps,libs,test}/**/*.ts" --ignore-pattern "src/generated/prisma/**"
+    - npm test -- --runInBand
+    - npm run build
+
+frontend_verify:
+  stage: verify
+  before_script:
+    - cd frontend
+    - npm ci
+  script:
+    - npm run lint
+    - npm test

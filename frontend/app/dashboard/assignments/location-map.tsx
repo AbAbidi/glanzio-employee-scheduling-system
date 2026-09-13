@@ -1,7 +1,7 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CircleMarker, Map as LeafletMap, Polyline } from "leaflet";
 import { API_BASE_URL, responseMessage } from "../../lib/auth-client";
 import type { MapLocation, RoutePreview } from "./types";
@@ -22,6 +22,11 @@ type SearchCoordinate = {
   latitude: number;
   longitude: number;
   displayName: string;
+};
+
+type PointSelectionState = {
+  activePoint: PointMode;
+  allowDestinationSelection: boolean;
 };
 
 const BERLIN_POSITION: [number, number] = [52.52, 13.405];
@@ -50,11 +55,35 @@ export default function LocationMap({
   const onDepartureRef = useRef(onDepartureChange);
   const onDestinationRef = useRef(onDestinationChange);
   const onRouteChangeRef = useRef(onRouteChange);
-  const [activePoint, setActivePoint] = useState<PointMode>("departure");
+  const [pointSelection, setPointSelection] = useState<PointSelectionState>({
+    activePoint: "departure",
+    allowDestinationSelection,
+  });
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [routing, setRouting] = useState(false);
   const [error, setError] = useState("");
+
+  if (
+    pointSelection.allowDestinationSelection !== allowDestinationSelection
+  ) {
+    setPointSelection({
+      activePoint:
+        !allowDestinationSelection &&
+        pointSelection.activePoint === "destination"
+          ? "departure"
+          : pointSelection.activePoint,
+      allowDestinationSelection,
+    });
+  }
+
+  const activePoint = pointSelection.activePoint;
+  const setActivePoint = useCallback((nextPoint: PointMode) => {
+    setPointSelection((current) => ({
+      ...current,
+      activePoint: nextPoint,
+    }));
+  }, []);
 
   useEffect(() => {
     activePointRef.current = activePoint;
@@ -62,10 +91,7 @@ export default function LocationMap({
 
   useEffect(() => {
     allowDestinationRef.current = allowDestinationSelection;
-    if (!allowDestinationSelection && activePoint === "destination") {
-      setActivePoint("departure");
-    }
-  }, [activePoint, allowDestinationSelection]);
+  }, [allowDestinationSelection]);
 
   useEffect(() => {
     destinationRef.current = destination;
@@ -77,54 +103,57 @@ export default function LocationMap({
     onRouteChangeRef.current = onRouteChange;
   }, [onDepartureChange, onDestinationChange, onRouteChange]);
 
-  async function resolvePosition(latitude: number, longitude: number) {
-    const selectedPoint = activePointRef.current;
-    const provisionalLocation: MapLocation = {
-      latitude,
-      longitude,
-      displayName: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
-      siteName: "Selected map position",
-      addressLine1: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
-      city: "Berlin",
-      countryCode: "DE",
-    };
-
-    if (selectedPoint === "destination" && allowDestinationRef.current) {
-      onDestinationRef.current(provisionalLocation);
-    } else {
-      onDepartureRef.current(provisionalLocation);
-    }
-
-    setLoading(true);
-    setError("");
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/calendar/reverse-geocode`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ latitude, longitude }),
-      });
-
-      if (!response.ok) throw new Error(await responseMessage(response));
-      const location = (await response.json()) as MapLocation;
+  const resolvePosition = useCallback(
+    async (latitude: number, longitude: number) => {
+      const selectedPoint = activePointRef.current;
+      const provisionalLocation: MapLocation = {
+        latitude,
+        longitude,
+        displayName: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+        siteName: "Selected map position",
+        addressLine1: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+        city: "Berlin",
+        countryCode: "DE",
+      };
 
       if (selectedPoint === "destination" && allowDestinationRef.current) {
-        onDestinationRef.current(location);
+        onDestinationRef.current(provisionalLocation);
       } else {
-        onDepartureRef.current(location);
-        if (allowDestinationRef.current && !destinationRef.current) {
-          setActivePoint("destination");
-        }
+        onDepartureRef.current(provisionalLocation);
       }
-    } catch (requestError) {
-      setError("The address service is temporarily unavailable. Your exact map position is still selected.");
-    } finally {
-      setLoading(false);
-    }
-  }
+
+      setLoading(true);
+      setError("");
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/calendar/reverse-geocode`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ latitude, longitude }),
+        });
+
+        if (!response.ok) throw new Error(await responseMessage(response));
+        const location = (await response.json()) as MapLocation;
+
+        if (selectedPoint === "destination" && allowDestinationRef.current) {
+          onDestinationRef.current(location);
+        } else {
+          onDepartureRef.current(location);
+          if (allowDestinationRef.current && !destinationRef.current) {
+            setActivePoint("destination");
+          }
+        }
+      } catch {
+        setError("The address service is temporarily unavailable. Your exact map position is still selected.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [accessToken, setActivePoint],
+  );
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -158,7 +187,7 @@ export default function LocationMap({
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, []);
+  }, [resolvePosition]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -236,6 +265,7 @@ export default function LocationMap({
       setRouting(false);
       return;
     }
+    const activeMap = map;
 
     const controller = new AbortController();
 
@@ -275,9 +305,9 @@ export default function LocationMap({
           opacity: 0.92,
           lineCap: "round",
           lineJoin: "round",
-        }).addTo(map);
+        }).addTo(activeMap);
         routeLineRef.current.bringToBack();
-        map.fitBounds(routeLineRef.current.getBounds().pad(0.12), {
+        activeMap.fitBounds(routeLineRef.current.getBounds().pad(0.12), {
           maxZoom: 15,
         });
         onRouteChangeRef.current(route);
@@ -295,13 +325,7 @@ export default function LocationMap({
 
     void drawDrivingRoute();
     return () => controller.abort();
-  }, [
-    accessToken,
-    departure?.latitude,
-    departure?.longitude,
-    destination?.latitude,
-    destination?.longitude,
-  ]);
+  }, [accessToken, departure, destination]);
 
   async function handleSearch() {
     const query = search.trim();

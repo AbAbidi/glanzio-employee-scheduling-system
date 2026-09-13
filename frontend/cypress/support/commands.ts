@@ -1,7 +1,3 @@
-/// <reference types="cypress" />
-
-import cypress from "cypress";
-
 // ***********************************************
 // This example commands.ts shows you how to
 // create various custom commands and overwrite
@@ -66,16 +62,6 @@ type AuthenticationResponse = {
 };
 
 const API_BASE_URL = "http://localhost:3000/api/v1";
-
-declare global {
-  namespace Cypress {
-    interface Chainable {
-      mockAdminSession(): Chainable<void>;
-      mockEmployeeSession(): Chainable<void>;
-      loginAsAdmin(): Chainable<void>;
-    }
-  }
-}
 
 /*
  * Fake administrator authentication.
