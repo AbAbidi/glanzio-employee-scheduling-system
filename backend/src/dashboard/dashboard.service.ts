@@ -29,6 +29,12 @@ const RESET_NOTIFICATION_TYPES = [
   NotificationType.STUDENT_HOUR_WARNING,
 ] as const;
 
+type EmployeeMonthMetrics = {
+  assignmentIds: Set<string>;
+  minutes: number;
+  amount: number;
+};
+
 @Injectable()
 export class DashboardService {
   constructor(
@@ -73,6 +79,8 @@ export class DashboardService {
     actorUserId: string,
     _input: ResetOperationalDataDto,
   ) {
+    void _input;
+
     const result = await this.prisma.$transaction(async (transaction) => {
       const assignmentCount = await transaction.workAssignment.count();
       const recurringTemplateCount =
@@ -220,13 +228,7 @@ export class DashboardService {
         revenue: number;
       }
     >();
-    const employeeMonths = new Map<
-      string,
-      Map<
-        string,
-        { assignmentIds: Set<string>; minutes: number; amount: number }
-      >
-    >();
+    const employeeMonths = new Map<string, Map<string, EmployeeMonthMetrics>>();
 
     for (const assignment of assignments) {
       const monthKey = DateTime.fromJSDate(assignment.endAt)
@@ -245,7 +247,10 @@ export class DashboardService {
           ? (durationMinutes / 60) * Number(link.agreedHourlyRate)
           : 0;
         assignmentCost += amount;
-        const byEmployee = employeeMonths.get(link.employeeId) ?? new Map();
+        // Keep the fallback typed so map values remain EmployeeMonthMetrics.
+        const byEmployee =
+          employeeMonths.get(link.employeeId) ??
+          new Map<string, EmployeeMonthMetrics>();
         const value = byEmployee.get(monthKey) ?? {
           assignmentIds: new Set<string>(),
           minutes: 0,
@@ -278,7 +283,9 @@ export class DashboardService {
     }
 
     const employeeRows = employees.flatMap((employee) => {
-      const rawByMonth = employeeMonths.get(employee.id) ?? new Map();
+      const rawByMonth =
+        employeeMonths.get(employee.id) ??
+        new Map<string, EmployeeMonthMetrics>();
       let carryMinutes = 0;
       const allMonthKeys = Array.from(rawByMonth.keys()).sort();
       const firstKey =

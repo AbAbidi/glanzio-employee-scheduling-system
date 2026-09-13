@@ -59,7 +59,7 @@ describe("Backend API foundation", () => {
     }).then((response) => {
       expect(response.status).to.equal(401);
       expect(response.body.statusCode).to.equal(401);
-      expect(response.body.message).to.exist;
+      expect(response.body).to.have.property("message");
     });
   });
 
@@ -71,7 +71,7 @@ describe("Backend API foundation", () => {
     }).then((response) => {
       expect(response.status).to.equal(404);
       expect(response.body.statusCode).to.equal(404);
-      expect(response.body.message).to.exist;
+      expect(response.body).to.have.property("message");
     });
   });
 });

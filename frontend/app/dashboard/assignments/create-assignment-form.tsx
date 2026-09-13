@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useMemo,
   useState,
   type FormEvent,
 } from "react";
@@ -49,6 +50,16 @@ type CreateAssignmentFormProps = {
 
 type SiteMode = "existing" | "new";
 type RepeatMode = "NONE" | "DAILY" | "WEEKLY" | "MONTHLY";
+type SavedSiteSelection = {
+  site: CleaningSite | null;
+  lookupKey: string;
+  coordinates: MapLocation | null;
+};
+type SavedSiteLookup = {
+  key: string;
+  location: MapLocation | null;
+  error: string;
+};
 
 const WEEKDAYS = [
   { value: 1, label: "M" },
@@ -99,10 +110,9 @@ export default function CreateAssignmentForm({
     useState<MapLocation | null>(null);
   const [departureLocation, setDepartureLocation] =
     useState<MapLocation | null>(null);
-  const [savedSiteLocation, setSavedSiteLocation] =
-    useState<MapLocation | null>(null);
+  const [savedSiteLookup, setSavedSiteLookup] =
+    useState<SavedSiteLookup | null>(null);
   const [mapRoute, setMapRoute] = useState<RoutePreview | null>(null);
-  const [savedSiteLocationError, setSavedSiteLocationError] = useState("");
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -161,41 +171,60 @@ export default function CreateAssignmentForm({
     };
   }, [accessToken]);
 
-  useEffect(() => {
+  const savedSiteSelection = useMemo<SavedSiteSelection>(() => {
     if (siteMode !== "existing") {
-      setSavedSiteLocation(null);
-      setSavedSiteLocationError("");
-      return;
+      return { site: null, lookupKey: "", coordinates: null };
     }
 
-    const site = sites.find((candidate) => candidate.id === selectedSiteId);
-    if (!site) {
-      setSavedSiteLocation(null);
-      return;
-    }
+    const site =
+      sites.find((candidate) => candidate.id === selectedSiteId) ?? null;
+    if (!site) return { site: null, lookupKey: "", coordinates: null };
 
+    const address = siteAddress(site);
     const latitude = Number(site.latitude);
     const longitude = Number(site.longitude);
-    if (site.latitude !== null && site.longitude !== null && Number.isFinite(latitude) && Number.isFinite(longitude)) {
-      setSavedSiteLocation({
-        latitude,
-        longitude,
-        displayName: siteAddress(site),
-        siteName: site.name,
-        addressLine1: site.addressLine1,
-        city: site.city,
-        countryCode: site.countryCode,
-      });
-      setSavedSiteLocationError("");
-      return;
-    }
+    const coordinates =
+      site.latitude !== null &&
+      site.longitude !== null &&
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude)
+        ? {
+            latitude,
+            longitude,
+            displayName: address,
+            siteName: site.name,
+            addressLine1: site.addressLine1,
+            city: site.city,
+            countryCode: site.countryCode,
+          }
+        : null;
+
+    return {
+      site,
+      lookupKey: `${site.id}:${address}`,
+      coordinates,
+    };
+  }, [selectedSiteId, siteMode, sites]);
+
+  const savedSiteLocation =
+    savedSiteSelection.coordinates ??
+    (savedSiteLookup?.key === savedSiteSelection.lookupKey
+      ? savedSiteLookup.location
+      : null);
+  const savedSiteLocationError =
+    !savedSiteSelection.coordinates &&
+    savedSiteLookup?.key === savedSiteSelection.lookupKey
+      ? savedSiteLookup.error
+      : "";
+
+  useEffect(() => {
+    const { site, lookupKey, coordinates } = savedSiteSelection;
+    if (!site || coordinates) return;
+    const savedSite = site;
 
     let active = true;
 
     async function locateSavedSite() {
-      setSavedSiteLocation(null);
-      setSavedSiteLocationError("");
-
       try {
         const response = await fetch(`${API_BASE_URL}/calendar/location-search`, {
           method: "POST",
@@ -203,7 +232,7 @@ export default function CreateAssignmentForm({
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ query: siteAddress(site!) }),
+          body: JSON.stringify({ query: siteAddress(savedSite) }),
         });
 
         if (!response.ok) throw new Error(await responseMessage(response));
@@ -212,20 +241,27 @@ export default function CreateAssignmentForm({
           "latitude" | "longitude" | "displayName"
         >;
         if (!active) return;
-        setSavedSiteLocation({
-          ...coordinate,
-          siteName: site!.name,
-          addressLine1: site!.addressLine1,
-          city: site!.city,
-          countryCode: site!.countryCode,
+        setSavedSiteLookup({
+          key: lookupKey,
+          location: {
+            ...coordinate,
+            siteName: savedSite.name,
+            addressLine1: savedSite.addressLine1,
+            city: savedSite.city,
+            countryCode: savedSite.countryCode,
+          },
+          error: "",
         });
       } catch (requestError) {
         if (!active) return;
-        setSavedSiteLocationError(
-          requestError instanceof Error
-            ? requestError.message
-            : "The saved destination could not be placed on the map.",
-        );
+        setSavedSiteLookup({
+          key: lookupKey,
+          location: null,
+          error:
+            requestError instanceof Error
+              ? requestError.message
+              : "The saved destination could not be placed on the map.",
+        });
       }
     }
 
@@ -233,7 +269,7 @@ export default function CreateAssignmentForm({
     return () => {
       active = false;
     };
-  }, [accessToken, selectedSiteId, siteMode, sites]);
+  }, [accessToken, savedSiteSelection]);
 
   function toggleEmployee(employeeId: string) {
     setSelectedEmployeeIds((current) =>
@@ -552,15 +588,15 @@ export default function CreateAssignmentForm({
             <div className="schedulerSectionHeading">
               <div><strong>Cleaning destination</strong><small>Choose a saved site or select a new position on the map.</small></div>
               <div className="segmentedControl">
-                <button type="button" className={siteMode === "existing" ? "isSelected" : ""} onClick={() => { setSiteMode("existing"); setMapRoute(null); }}>Saved site</button>
-                <button type="button" className={siteMode === "new" ? "isSelected" : ""} onClick={() => { setSiteMode("new"); setMapRoute(null); }}>New site</button>
+                <button type="button" className={siteMode === "existing" ? "isSelected" : ""} onClick={() => { setSiteMode("existing"); setSavedSiteLookup(null); setMapRoute(null); }}>Saved site</button>
+                <button type="button" className={siteMode === "new" ? "isSelected" : ""} onClick={() => { setSiteMode("new"); setSavedSiteLookup(null); setMapRoute(null); }}>New site</button>
               </div>
             </div>
 
             {siteMode === "existing" ? (
               <label className="schedulerInputLabel">
                 Site
-                <select value={selectedSiteId} onChange={(event) => { setSelectedSiteId(event.target.value); setMapRoute(null); }} required>
+                <select value={selectedSiteId} onChange={(event) => { setSelectedSiteId(event.target.value); setSavedSiteLookup(null); setMapRoute(null); }} required>
                   <option value="">Select a cleaning site</option>
                   {sites.map((site) => (
                     <option key={site.id} value={site.id}>{site.name} · {site.client.companyName} · {site.city}</option>

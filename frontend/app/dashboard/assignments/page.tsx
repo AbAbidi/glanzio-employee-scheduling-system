@@ -123,8 +123,6 @@ export default function AssignmentsPage() {
   }, []);
 
   const days = useMemo(() => monthDays(month), [month]);
-  const monthToken = `${month.getFullYear()}-${month.getMonth()}`;
-
   useEffect(() => {
     let active = true;
 
@@ -196,7 +194,7 @@ export default function AssignmentsPage() {
     return () => {
       active = false;
     };
-  }, [session, monthToken, refreshVersion]);
+  }, [session, month, refreshVersion]);
 
   const eventsByDay = useMemo(() => {
     const grouped = new Map<string, WorkAssignment[]>();
