@@ -4,6 +4,10 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import {
+  ManagerScope,
+  ManagerScopeGuard,
+} from '../common/guards/manager-scope.guard';
 import { UserRole } from '../generated/prisma/client';
 import { AssignmentsService } from './assignments.service';
 import { AssignmentQueryDto } from './dto/assignment-query.dto';
@@ -15,8 +19,9 @@ import {
 import { RouteEstimationService } from './route-estimation.service';
 
 @Controller('calendar')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN, UserRole.EMPLOYEE)
+@UseGuards(JwtAuthGuard, RolesGuard, ManagerScopeGuard)
+@ManagerScope('assignment')
+@Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.EMPLOYEE)
 export class CalendarController {
   constructor(
     private readonly assignmentsService: AssignmentsService,
@@ -32,7 +37,7 @@ export class CalendarController {
   }
 
   @Post('route-preview')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   routePreview(@Body() input: RoutePreviewDto) {
     return this.routeEstimationService.estimate(
       input.originAddress,
@@ -54,13 +59,13 @@ export class CalendarController {
   }
 
   @Post('location-search')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   locationSearch(@Body() input: LocationSearchDto) {
     return this.routeEstimationService.search(input.query);
   }
 
   @Post('reverse-geocode')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   reverseGeocode(@Body() input: ReverseGeocodeDto) {
     return this.routeEstimationService.reverse(input.latitude, input.longitude);
   }

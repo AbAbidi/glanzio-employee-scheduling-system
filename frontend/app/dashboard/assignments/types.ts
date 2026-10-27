@@ -30,18 +30,18 @@ export type AssignedEmployee = {
   assignmentId: string;
   employeeId: string;
   assignedAt: string;
-  agreedHourlyRate: string | null;
-  rateOverridden: boolean;
+  agreedHourlyRate?: string | null;
+  rateOverridden?: boolean;
   employee: {
     id: string;
     firstName: string;
     lastName: string;
-    hourlyRate: string | null;
+    hourlyRate?: string | null;
     isStudent: boolean;
     active: boolean;
-    user: {
+    user?: {
       id: string;
-      email: string;
+      email: string | null;
       status: "INVITED" | "ACTIVE" | "INACTIVE";
     };
   };
@@ -62,7 +62,7 @@ export type WorkAssignment = {
   departureLongitude: string | null;
   travelDistanceMeters: number | null;
   estimatedTravelMinutes: number | null;
-  clientCharge: string | null;
+  clientCharge?: string | null;
   routeCalculatedAt: string | null;
   createdById: string;
   updatedById: string | null;
@@ -128,6 +128,7 @@ export type CreateRecurringAssignmentInput = TravelSnapshotInput & {
 };
 
 export type StudentHourWarning = {
+  period?: string;
   employeeId: string;
   employeeName: string;
   month: string;

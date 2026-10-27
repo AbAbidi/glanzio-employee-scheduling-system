@@ -10,6 +10,7 @@ datasource db {
 
 enum UserRole {
   ADMIN
+  MANAGER
   EMPLOYEE
 }
 
@@ -39,15 +40,57 @@ enum NotificationType {
   STUDENT_HOUR_WARNING
 }
 
+enum FeedbackStatus {
+  PENDING
+  PRIVATE
+  PUBLISHED
+  REJECTED
+}
+
+model Feedback {
+  id            String         @id @default(uuid()) @db.Uuid
+  submissionKey String         @unique @db.Uuid
+  displayName   String         @db.VarChar(80)
+  message       String         @db.VarChar(2000)
+  rating        Int?
+  allowPublic   Boolean        @default(false)
+  status        FeedbackStatus @default(PENDING)
+  publishedAt   DateTime?       @db.Timestamptz(3)
+  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([status, createdAt])
+}
+
+model QuoteRequest {
+  id             String    @id @default(uuid()) @db.Uuid
+  submissionKey  String    @unique @db.Uuid
+  inputHash      String    @db.VarChar(64)
+  fullName       String    @db.VarChar(120)
+  email          String    @db.VarChar(320)
+  service        String    @db.VarChar(100)
+  location       String    @db.VarChar(200)
+  message        String    @db.VarChar(4000)
+  status         String    @default("PENDING") @db.VarChar(12)
+  attempts       Int       @default(0)
+  lastAttemptAt  DateTime? @db.Timestamptz(3)
+  acceptedAt     DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([status, createdAt])
+}
+
 model User {
   id                  String               @id @default(uuid()) @db.Uuid
-  email               String               @unique @db.VarChar(320)
+  email               String?              @unique @db.VarChar(320)
   passwordHash        String?
   role                UserRole
   status              UserStatus           @default(ACTIVE)
   failedLoginAttempts Int                  @default(0)
   lockedUntil         DateTime?            @db.Timestamptz(3)
   passwordChangedAt   DateTime?            @db.Timestamptz(3)
+  authVersion         Int                  @default(0)
   lastLoginAt         DateTime?            @db.Timestamptz(3)
   createdAt           DateTime             @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime             @updatedAt @db.Timestamptz(3)
@@ -68,6 +111,7 @@ model User {
 
 model Employee {
   id                     String                      @id @default(uuid()) @db.Uuid
+  loginCode              String                      @unique @default(dbgenerated("next_employee_login_code()")) @db.VarChar(6)
   userId                 String                      @unique @db.Uuid
   firstName              String                      @db.VarChar(100)
   lastName               String                      @db.VarChar(100)
@@ -80,10 +124,47 @@ model Employee {
   user                   User                        @relation(fields: [userId], references: [id], onDelete: Restrict)
   assignmentLinks        AssignmentEmployee[]
   recurringTemplateLinks RecurringTemplateEmployee[]
+  studentStatements      StudentStatement[]
 
   @@index([active])
   @@index([isStudent, active])
   @@index([lastName, firstName])
+}
+
+// Simulation accounting is independent from the original work intervals.
+model StudentStatement {
+  id            String   @id @default(uuid()) @db.Uuid
+  employeeId    String   @db.Uuid
+  month         String   @db.VarChar(7)
+  revision      Int      @default(1)
+  status        String   @default("DRAFT") @db.VarChar(12)
+  sourceHash    String   @db.VarChar(64)
+  policyVersion String   @db.VarChar(80)
+  payload       Json
+  pdfBytes      Bytes?
+  closedAt      DateTime? @db.Timestamptz(3)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  movements     StudentCreditMovement[]
+
+  @@unique([employeeId, month, revision])
+  @@index([employeeId, status, month])
+}
+
+model StudentCreditMovement {
+  id                 String @id @default(uuid()) @db.Uuid
+  statementId        String @db.Uuid
+  kind               String @db.VarChar(12)
+  sourceKey          String @db.VarChar(180)
+  originMonth        String @db.VarChar(7)
+  sourceAssignmentId String @db.Uuid
+  minutes            Int
+  hourlyRate         Decimal @db.Decimal(10, 2)
+  statement          StudentStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@unique([statementId, sourceKey, kind])
+  @@index([statementId])
 }
 
 model Client {
@@ -168,6 +249,7 @@ model AssignmentEmployee {
   assignedAt       DateTime       @default(now()) @db.Timestamptz(3)
   agreedHourlyRate Decimal?       @db.Decimal(10, 2)
   rateOverridden   Boolean        @default(false)
+  occupiedDuring   Unsupported("tstzrange")?
   assignment       WorkAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   employee         Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
 

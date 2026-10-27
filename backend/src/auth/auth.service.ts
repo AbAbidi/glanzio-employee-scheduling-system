@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -22,9 +23,11 @@ const ACCESS_TOKEN_FIELDS = {
   email: true,
   role: true,
   status: true,
+  authVersion: true,
   employee: {
     select: {
       id: true,
+      loginCode: true,
       firstName: true,
       lastName: true,
       isStudent: true,
@@ -35,11 +38,13 @@ const ACCESS_TOKEN_FIELDS = {
 
 type SessionUser = {
   id: string;
-  email: string;
+  email: string | null;
   role: UserRole;
   status: UserStatus;
+  authVersion?: number;
   employee: {
     id: string;
+    loginCode?: string;
     firstName: string;
     lastName: string;
     isStudent: boolean;
@@ -67,18 +72,35 @@ export class AuthService {
   ) {}
 
   async login(input: LoginDto): Promise<AuthenticationResult> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: input.email },
-      select: {
-        ...ACCESS_TOKEN_FIELDS,
-        passwordHash: true,
-        failedLoginAttempts: true,
-        lockedUntil: true,
-      },
-    });
+    if (
+      (!input.identifier && !input.email) ||
+      (input.identifier && input.email)
+    ) {
+      throw new BadRequestException('Provide one login identifier.');
+    }
+    const identifier = (input.identifier ?? input.email ?? '').trim();
+    const select = {
+      ...ACCESS_TOKEN_FIELDS,
+      passwordHash: true,
+      failedLoginAttempts: true,
+      lockedUntil: true,
+    } as const;
+    const user = /^[A-Z]{3}[0-9]{3}$/i.test(identifier)
+      ? await this.prisma.user.findFirst({
+          where: {
+            role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] },
+            employee: { loginCode: identifier.toUpperCase() },
+          },
+          select,
+        })
+      : await this.prisma.user.findFirst({
+          // Email is an ADMIN login only, including the legacy `email` contract.
+          where: { email: identifier.toLowerCase(), role: UserRole.ADMIN },
+          select,
+        });
 
     if (!user) {
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException('Invalid identifier or password.');
     }
 
     if (user.status === UserStatus.INVITED) {
@@ -113,7 +135,7 @@ export class AuthService {
 
     if (!passwordMatches) {
       await this.recordFailedLogin(user.id, user.failedLoginAttempts);
-      throw new UnauthorizedException('Invalid email or password.');
+      throw new UnauthorizedException('Invalid identifier or password.');
     }
 
     const now = new Date();
@@ -456,8 +478,22 @@ export class AuthService {
     });
     const now = new Date();
 
-    await this.prisma.$transaction([
-      this.prisma.user.update({
+    await this.prisma.$transaction(async (transaction) => {
+      const consumed = await transaction.passwordResetToken.updateMany({
+        where: {
+          id: resetToken.id,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+      if (consumed.count !== 1) {
+        throw new UnauthorizedException(
+          'The password-reset token was already used or expired.',
+        );
+      }
+
+      await transaction.user.update({
         where: { id: resetToken.userId },
         data: {
           passwordHash,
@@ -465,33 +501,35 @@ export class AuthService {
           failedLoginAttempts: 0,
           lockedUntil: null,
         },
-      }),
-      this.prisma.passwordResetToken.update({
-        where: { id: resetToken.id },
+      });
+      // A successful reset also invalidates other outstanding reset links.
+      await transaction.passwordResetToken.updateMany({
+        where: { userId: resetToken.userId, usedAt: null },
         data: { usedAt: now },
-      }),
-      this.prisma.refreshSession.updateMany({
+      });
+      await transaction.refreshSession.updateMany({
         where: {
           userId: resetToken.userId,
           revokedAt: null,
         },
         data: { revokedAt: now },
-      }),
-      this.prisma.auditLog.create({
+      });
+      await transaction.auditLog.create({
         data: {
           actorUserId: resetToken.userId,
           action: 'PASSWORD_RESET',
           entityType: 'User',
           entityId: resetToken.userId,
         },
-      }),
-    ]);
+      });
+    });
   }
 
   private async createSession(user: {
     id: string;
-    email: string;
+    email: string | null;
     role: UserRole;
+    authVersion?: number;
   }): Promise<TokenPair> {
     const refreshToken = randomBytes(48).toString('base64url');
     const refreshTokenExpiresAt = this.refreshExpiry();
@@ -515,14 +553,16 @@ export class AuthService {
 
   private async signAccessToken(user: {
     id: string;
-    email: string;
+    email: string | null;
     role: UserRole;
+    authVersion?: number;
   }): Promise<string> {
     return this.jwtService.signAsync(
       {
         sub: user.id,
         email: user.email,
         role: user.role,
+        ver: user.authVersion ?? 0,
       },
       {
         secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),

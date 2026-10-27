@@ -15,6 +15,10 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import {
+  ManagerScope,
+  ManagerScopeGuard,
+} from '../common/guards/manager-scope.guard';
 import { UserRole } from '../generated/prisma/client';
 import { AssignmentsService } from './assignments.service';
 import { AssignmentQueryDto } from './dto/assignment-query.dto';
@@ -24,12 +28,13 @@ import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import { UpdateAssignmentRecurrenceDto } from './dto/update-assignment-recurrence.dto';
 
 @Controller('assignments')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ManagerScopeGuard)
+@ManagerScope('assignment')
 export class AssignmentsController {
   constructor(private readonly assignmentsService: AssignmentsService) {}
 
   @Post()
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: CreateAssignmentDto,
@@ -38,7 +43,7 @@ export class AssignmentsController {
   }
 
   @Get()
-  @Roles(UserRole.ADMIN, UserRole.EMPLOYEE)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.EMPLOYEE)
   list(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: AssignmentQueryDto,
@@ -47,7 +52,7 @@ export class AssignmentsController {
   }
 
   @Get('history')
-  @Roles(UserRole.ADMIN, UserRole.EMPLOYEE)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.EMPLOYEE)
   history(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: AssignmentQueryDto,
@@ -60,7 +65,7 @@ export class AssignmentsController {
   }
 
   @Get(':id')
-  @Roles(UserRole.ADMIN, UserRole.EMPLOYEE)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.EMPLOYEE)
   findOne(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -69,7 +74,7 @@ export class AssignmentsController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -79,7 +84,7 @@ export class AssignmentsController {
   }
 
   @Patch(':id/recurrence')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   updateRecurrence(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -89,7 +94,7 @@ export class AssignmentsController {
   }
 
   @Post(':id/cancel')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   cancel(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -99,7 +104,7 @@ export class AssignmentsController {
   }
 
   @Post(':id/cancel-series')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   cancelSeries(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -109,7 +114,7 @@ export class AssignmentsController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   remove(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import BrandIntroShell from "./brand-intro-shell";
+import CookiePreferences from "./cookie-preferences";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,11 +16,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Clarity Clean | Intelligente Gebäudereinigung",
-    template: "%s | Clarity Clean",
+    default: "Glanzio Reinigung | Gebäudereinigung am Bodensee",
+    template: "%s | Glanzio Reinigung",
   },
   description:
-    "Zuverlässige Gebäudereinigung mit klaren Standards, koordinierten Teams und einem sicheren Mitarbeiterportal.",
+    "Professionelle Gebäudereinigung und Hausmeisterservice in der Region Bodensee – sauber, zuverlässig und professionell.",
 };
 
 export default function RootLayout({
@@ -31,7 +33,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <BrandIntroShell />
         {children}
+        <CookiePreferences />
       </body>
     </html>
   );

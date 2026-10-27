@@ -1,5 +1,7 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import { useState } from "react";
 
 type InvitationLinkPanelProps = {
@@ -22,6 +24,7 @@ export default function InvitationLinkPanel({
   expiresAt,
   compact = false,
 }: InvitationLinkPanelProps) {
+  const { t } = useDashboardLanguage();
   const [copied, setCopied] = useState(false);
 
   async function copyInvitation() {
@@ -39,27 +42,25 @@ export default function InvitationLinkPanel({
   return (
     <div className={`invitationLinkPanel${compact ? " invitationLinkPanelCompact" : ""}`}>
       <div className="invitationLinkHeading">
-        <span>Employee invitation link</span>
-        {expiry ? <small>Expires {expiry}</small> : null}
+        <span>{t("Employee invitation link")}</span>
+        {expiry ? <small>{t("Expires ")}{expiry}</small> : null}
       </div>
 
       <div className="invitationLinkControls">
         <input
-          aria-label="Employee invitation URL"
+          aria-label={t("Employee invitation URL")}
           type="text"
           value={url}
           readOnly
           onFocus={(event) => event.currentTarget.select()}
         />
         <button type="button" onClick={copyInvitation}>
-          {copied ? "Copied!" : "Copy link"}
+          {copied ? t("Copied!") : t("Copy link")}
         </button>
-        <a href={url} target="_blank" rel="noreferrer">
-          Open
-        </a>
+        <a href={url} target="_blank" rel="noreferrer">{t("Open")}</a>
       </div>
 
-      <p>Send this complete address to the employee. Generating a new link disables the previous one.</p>
+      <p>{t("Send this complete address to the employee. Generating a new link disables the previous one.")}</p>
     </div>
   );
 }

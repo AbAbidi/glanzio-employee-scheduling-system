@@ -11,15 +11,30 @@ workflow:
 
 backend_verify:
   stage: verify
+  services:
+    - name: postgres:18
+      alias: postgres
   variables:
-    DATABASE_URL: "postgresql://ci:ci@localhost:5432/esms_ci"
+    POSTGRES_DB: "esms_ci"
+    POSTGRES_USER: "ci"
+    POSTGRES_PASSWORD: "ci"
+    DATABASE_URL: "postgresql://ci:ci@postgres:5432/esms_ci"
+    E2E_DATABASE_URL: "postgresql://ci:ci@postgres:5432/esms_ci"
+    NODE_ENV: "test"
+    JWT_ACCESS_SECRET: "ci-only-key-do-not-use-in-production-123456789"
+    JWT_ACCESS_EXPIRES_IN: "15m"
+    REFRESH_TOKEN_EXPIRES_IN_DAYS: "30"
+    CORS_ORIGIN: "http://localhost:5173"
   before_script:
     - cd backend
     - npm ci
   script:
+    - npm audit --audit-level=high
     - npm run prisma:generate
+    - npm run db:deploy
     - npm exec -- eslint "{src,apps,libs,test}/**/*.ts" --ignore-pattern "src/generated/prisma/**"
     - npm test -- --runInBand
+    - npm run test:e2e -- --runInBand
     - npm run build
 
 frontend_verify:
@@ -28,5 +43,7 @@ frontend_verify:
     - cd frontend
     - npm ci
   script:
+    - npm audit --audit-level=high
     - npm run lint
+    - npm run typecheck
     - npm test

@@ -50,7 +50,8 @@ export class SitesService {
   async list(query: SiteQueryDto) {
     const search = query.search?.trim();
     const where: Prisma.CleaningSiteWhereInput = {
-      active: query.active,
+      active: query.active ?? true,
+      client: query.active === false ? undefined : { active: true },
       clientId: query.clientId,
       OR: search
         ? [

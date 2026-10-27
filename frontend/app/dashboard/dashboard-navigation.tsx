@@ -1,18 +1,22 @@
 "use client";
 
+import { useDashboardLanguage } from "./dashboard-language";
+import { isManagementRole, type AccountRole } from "../lib/access-policy";
+
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 type DashboardNavigationProps = {
-  role: "ADMIN" | "EMPLOYEE";
+  role: AccountRole;
 };
 
 export default function DashboardNavigation({
   role,
 }: DashboardNavigationProps) {
+  const { t } = useDashboardLanguage();
   const pathname = usePathname();
   const links =
-    role === "ADMIN"
+    isManagementRole(role)
       ? [
           {
             href: "/dashboard",
@@ -38,6 +42,13 @@ export default function DashboardNavigation({
             note: "Customers",
             icon: "◇",
           },
+          {
+            href: "/dashboard/archive",
+            label: "Archived records",
+            note: "Retained history",
+            icon: "▣",
+          },
+          { href: "/dashboard/feedback", label: "Feedback", note: "Moderation", icon: "✉" },
         ]
       : [
           {
@@ -61,8 +72,8 @@ export default function DashboardNavigation({
         ];
 
   return (
-    <nav className="dashboardWorkspaceNav" aria-label="Operations workspace">
-      {links.map((link) => {
+    <nav className="dashboardWorkspaceNav" aria-label={t("Operations workspace")}>
+      {[...links.filter((link) => role === "ADMIN" || !["/dashboard/archive", "/dashboard/feedback"].includes(link.href)), ...(role === "MANAGER" ? [{ href: "/dashboard/profile", label: "My profile", note: "Account", icon: "◎" }] : [])].map((link) => {
         const active =
           link.href === "/dashboard"
             ? pathname === link.href
@@ -75,8 +86,8 @@ export default function DashboardNavigation({
           >
             <i aria-hidden="true">{link.icon}</i>
             <span>
-              {link.label}
-              <small>{link.note}</small>
+              {t(link.label)}
+              <small>{t(link.note)}</small>
             </span>
           </Link>
         );

@@ -12,17 +12,28 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import {
+  ManagerScope,
+  ManagerScopeGuard,
+} from '../common/guards/manager-scope.guard';
 import { UserRole } from '../generated/prisma/client';
 import { MonthlyReportQueryDto } from './dto/monthly-report-query.dto';
 import { ReportsService } from './reports.service';
 
 @Controller('reports')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ManagerScopeGuard)
+@ManagerScope('report')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @Get('student-statement')
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
+  studentStatement(@Query() query: MonthlyReportQueryDto) {
+    return this.reportsService.studentStatement(query);
+  }
+
   @Get('monthly')
-  @Roles(UserRole.ADMIN, UserRole.EMPLOYEE)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.EMPLOYEE)
   monthly(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: MonthlyReportQueryDto,
@@ -31,7 +42,7 @@ export class ReportsController {
   }
 
   @Get('monthly-payment-statement')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   async monthlyPaymentStatement(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: MonthlyReportQueryDto,

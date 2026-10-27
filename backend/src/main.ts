@@ -1,13 +1,20 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
+
+  // Trust only a deliberately configured local reverse proxy, never arbitrary
+  // X-Forwarded-For supplied by the public internet.
+  if (configService.get<string>('TRUST_PROXY') === 'loopback') {
+    app.set('trust proxy', 'loopback');
+  }
 
   app.use(helmet());
   app.use(cookieParser());

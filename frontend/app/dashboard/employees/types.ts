@@ -5,6 +5,7 @@ export type EmployeeStatus =
 
 export type Employee = {
   id: string;
+  loginCode?: string;
   firstName: string;
   lastName: string;
   phone: string | null;
@@ -12,7 +13,8 @@ export type Employee = {
   isStudent: boolean;
   active: boolean;
   user: {
-    email: string;
+    role?: "ADMIN" | "MANAGER" | "EMPLOYEE";
+    email: string | null;
     status: EmployeeStatus;
     lastLoginAt: string | null;
   };
@@ -26,7 +28,8 @@ export type EmployeeListResponse = {
   pageCount: number;
 };
 export type CreateEmployeeInput = {
-  email: string;
+  role?: "MANAGER" | "EMPLOYEE";
+  email?: string;
   firstName: string;
   lastName: string;
   phone?: string;
@@ -36,6 +39,7 @@ export type CreateEmployeeInput = {
 
 export type InvitationDelivery = {
   expiresAt: string;
+  invitationUrl?: string;
   developmentInvitationUrl?: string;
 };
 

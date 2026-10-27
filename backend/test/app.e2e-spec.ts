@@ -129,7 +129,10 @@ describe('ESMS API (e2e)', () => {
 
     await request(app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ email: employeeEmail, password: employeePassword })
+      .send({
+        identifier: employeeResponse.body.employee.loginCode as string,
+        password: employeePassword,
+      })
       .expect(403);
 
     const employeeAcceptance = await request(app.getHttpServer())
@@ -211,6 +214,13 @@ describe('ESMS API (e2e)', () => {
     expect(reportResponse.body.items[0].plannedMinutes).toBe(120);
     expect(reportResponse.body.items[0].warning).toBeNull();
 
+    // Month closure belongs to the server, not an administrator action.
+    await adminAgent
+      .post('/api/v1/reports/student-statement/close')
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({ employeeId, month: '2026-10' })
+      .expect(404);
+
     const recurringResponse = await adminAgent
       .post('/api/v1/recurring-assignments')
       .set('Authorization', `Bearer ${adminAccessToken}`)
@@ -235,8 +245,8 @@ describe('ESMS API (e2e)', () => {
       .expect(200);
     expect(warningReport.body.items[0].plannedMinutes).toBe(5160);
     expect(warningReport.body.items[0].warning).toEqual({
-      thresholdMinutes: 4800,
-      exceededByMinutes: 360,
+      thresholdMinutes: 2400,
+      exceededByMinutes: 2760,
       assignmentBlocked: false,
     });
 
@@ -256,6 +266,20 @@ describe('ESMS API (e2e)', () => {
       .set('Authorization', `Bearer ${employeeAccessToken}`)
       .send({ companyName: 'Forbidden client' })
       .expect(403);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/dashboard/archive-analysis')
+      .set('Authorization', `Bearer ${employeeAccessToken}`)
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/employees/${employeeId}`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .expect(409);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/clients/${clientId}`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .expect(409);
 
     const notifications = await request(app.getHttpServer())
       .get('/api/v1/notifications')

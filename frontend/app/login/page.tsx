@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Vinext's local image optimizer requires an unavailable ASSETS binding. */
+
 import { FormEvent, useEffect, useState, useSyncExternalStore } from "react";
 import {
   API_BASE_URL,
@@ -7,9 +9,56 @@ import {
   clearSessionCache,
   responseMessage,
   restoreSession,
-  signOut,
   type AuthenticationResult,
 } from "../lib/auth-client";
+import PortalLegalDialog, {
+  type PortalLegalPanel,
+} from "../portal-legal-dialog";
+import LoginAccessIcon from "./login-access-icon";
+import HomeBrandIntro, { queueDashboardIntro } from "../home-brand-intro";
+import { openCookiePreferences } from "../lib/cookie-preferences";
+
+const PASSWORD_REQUIREMENTS = [
+  {
+    label: "Mindestens 12 Zeichen",
+    test: (value: string) => value.length >= 12,
+  },
+  {
+    label: "Je ein Groß- und Kleinbuchstabe",
+    test: (value: string) => /[A-Z]/.test(value) && /[a-z]/.test(value),
+  },
+  {
+    label: "Mindestens eine Zahl",
+    test: (value: string) => /\d/.test(value),
+  },
+  {
+    label: "Mindestens ein Sonderzeichen",
+    test: (value: string) => /[^A-Za-z0-9\s]/.test(value),
+  },
+] as const;
+
+function PortalLegalSummary({
+  onOpen,
+}: {
+  onOpen: (panel: PortalLegalPanel) => void;
+}) {
+  return (
+    <section
+      className="invitationLegalSummary"
+      aria-label="Datenschutz & Rechtliches"
+    >
+      <div className="invitationLegalActions">
+        <button type="button" onClick={() => onOpen("privacy")}>
+          Datenschutzerklärung
+        </button>
+        <button type="button" onClick={() => onOpen("impressum")}>
+          Impressum
+        </button>
+        <button type="button" onClick={openCookiePreferences}>Cookie-Einstellungen</button>
+      </div>
+    </section>
+  );
+}
 
 function subscribeToLocation(callback: () => void) {
   window.addEventListener("popstate", callback);
@@ -32,7 +81,6 @@ function clearInvitationFromAddress() {
 export default function Home() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const locationSearch = useSyncExternalStore(
     subscribeToLocation,
     getLocationSearch,
@@ -44,19 +92,38 @@ export default function Home() {
   const invitationMode = Boolean(invitationToken) && !invitationDismissed;
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [humanConfirmed, setHumanConfirmed] = useState(false);
+  const [legalPanel, setLegalPanel] = useState<PortalLegalPanel | null>(null);
+  const [companyWebsite, setCompanyWebsite] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [error, setError] = useState("");
-  const [session, setSession] = useState<AuthenticationResult | null>(null);
 
+  const passwordChecks = PASSWORD_REQUIREMENTS.map((requirement) => ({
+    ...requirement,
+    valid: requirement.test(newPassword),
+  }));
+  const passwordMeetsRequirements = passwordChecks.every(
+    (requirement) => requirement.valid,
+  );
+  const passwordsMatch =
+    confirmPassword.length > 0 && newPassword === confirmPassword;
   useEffect(() => {
     let isActive = true;
+
+    if (invitationMode) {
+      return () => {
+        isActive = false;
+      };
+    }
 
     async function restoreSavedSession() {
       try {
         const restoredSession = await restoreSession();
         if (isActive && restoredSession) {
-          setSession(restoredSession);
+          cacheSession(restoredSession);
+          window.location.replace("/dashboard");
+          return;
         }
       } catch {
         clearSessionCache();
@@ -71,7 +138,7 @@ export default function Home() {
     return () => {
       isActive = false;
     };
-  }, []);
+  }, [invitationMode]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -83,7 +150,10 @@ export default function Home() {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({
+          ...(email.includes("@") ? { email: email.trim() } : { identifier: email.trim() }),
+          password,
+        }),
       });
 
       if (!response.ok) {
@@ -92,8 +162,9 @@ export default function Home() {
 
       const result = (await response.json()) as AuthenticationResult;
       cacheSession(result);
-      setSession(result);
       setPassword("");
+      queueDashboardIntro();
+      window.location.replace("/dashboard");
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -110,7 +181,17 @@ export default function Home() {
     setError("");
 
     if (newPassword !== confirmPassword) {
-      setError("The two passwords do not match.");
+      setError("Die beiden Passwörter stimmen nicht überein.");
+      return;
+    }
+
+    if (!passwordMeetsRequirements) {
+      setError("Das Passwort erfüllt noch nicht alle Sicherheitsanforderungen.");
+      return;
+    }
+
+    if (!humanConfirmed || companyWebsite) {
+      setError("Bitte bestätigen Sie, dass Sie ein Mensch sind.");
       return;
     }
 
@@ -130,168 +211,206 @@ export default function Home() {
 
       const result = (await response.json()) as AuthenticationResult;
       cacheSession(result);
-      setSession(result);
       setNewPassword("");
       setConfirmPassword("");
       clearInvitationFromAddress();
+      queueDashboardIntro();
+      window.location.replace("/dashboard");
     } catch (requestError) {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : "Unable to accept the invitation. Please try again.",
+          : "Die Einladung konnte nicht bestätigt werden. Bitte versuchen Sie es erneut.",
       );
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  async function handleLogout() {
-    setError("");
-
-    try {
-      await signOut();
-    } finally {
-      setSession(null);
-      setEmail("");
-      setPassword("");
-    }
-  }
-
   return (
-    <main className="loginPage">
-      <section className="brandPanel" aria-labelledby="product-title">
-        <div className="brandMark" aria-label="Employee Scheduling System">
-          <span aria-hidden="true">ES</span>
-          <span>Employee Scheduling</span>
+    <main className={`loginPage invitationPage${invitationMode ? "" : " isLoginMode"}`}>
+      <HomeBrandIntro trigger="access" />
+      <section
+        className="brandPanel invitationBrandPanel"
+        aria-labelledby="product-title"
+      >
+        <div className="brandMark" aria-label="Glanzio Reinigung team portal">
+          <img
+            className="loginBrandLogo"
+            src="/glanzio-reinigung-logo.png"
+            alt="Glanzio Reinigung"
+          />
         </div>
 
-        <div className="brandCopy">
-          <p className="eyebrow">Operations, beautifully organized</p>
-          <h1 id="product-title">Every shift, site, and team in one calm view.</h1>
+        <div className="invitationBrandCopy">
+          <p className="eyebrow">
+            {invitationMode ? "Willkommen im Glanzio Team" : "Glanzio Teamportal"}
+          </p>
+          <h1 id="product-title">
+            {invitationMode
+              ? "Ihr persönlicher Zugang. Sicher eingerichtet."
+              : "Ihr Arbeitstag. Klar organisiert."}
+          </h1>
           <p className="brandDescription">
-            Plan cleaning assignments, protect employee availability, and keep
-            monthly working-hour insights close at hand.
+            {invitationMode
+              ? "Aktivieren Sie Ihr Mitarbeiterkonto, um Einsatzpläne, Arbeitszeiten und persönliche Informationen geschützt abzurufen."
+              : "Melden Sie sich sicher an und behalten Sie Einsatzpläne, Teams und Arbeitszeiten zuverlässig im Blick."}
           </p>
 
-          <div className="featureList" aria-label="Platform highlights">
-            <span>Live schedules</span>
-            <span>Protected access</span>
-            <span>Student-hour insights</span>
-          </div>
-        </div>
-
-        <div className="schedulePreview" aria-label="Example daily schedule">
-          <div className="scheduleHeader">
-            <div>
-              <span className="previewLabel">Today</span>
-              <strong>Thursday, 31 July</strong>
-            </div>
-            <span className="shiftCount">3 assignments</span>
-          </div>
-
-          <div className="shiftRow">
-            <time>08:00</time>
-            <span className="shiftLine" aria-hidden="true" />
-            <div>
-              <strong>Riverside Offices</strong>
-              <span>Morning service · 2 employees</span>
-            </div>
-          </div>
-          <div className="shiftRow">
-            <time>12:30</time>
-            <span className="shiftLine shiftLineAccent" aria-hidden="true" />
-            <div>
-              <strong>Maison Verdi</strong>
-              <span>Weekly visit · 1 employee</span>
-            </div>
-          </div>
-          <div className="shiftRow">
-            <time>17:00</time>
-            <span className="shiftLine" aria-hidden="true" />
-            <div>
-              <strong>North Quarter</strong>
-              <span>Evening service · 3 employees</span>
-            </div>
+          <div className="invitationSteps" aria-label="Vorteile Ihres Zugangs">
+            <article>
+              <div>
+                <strong>Einsatzpläne im Blick</strong>
+                <p>Ihre bestätigten Termine und Einsatzorte an einem Ort.</p>
+              </div>
+            </article>
+            <article>
+              <div>
+                <strong>Persönlich und geschützt</strong>
+                <p>Der Zugang gehört ausschließlich Ihnen.</p>
+              </div>
+            </article>
+            <article>
+              <div>
+                <strong>Arbeitszeiten transparent</strong>
+                <p>Nachvollziehbare Monats- und Stundenübersichten.</p>
+              </div>
+            </article>
           </div>
         </div>
       </section>
 
-      <section className="accessPanel" aria-labelledby="access-title">
-        <div className="accessCard">
-          {isRestoringSession ? (
-            <div className="sessionLoading" role="status">
-              <span className="loadingDot" aria-hidden="true" />
-              Checking your session…
-            </div>
-          ) : session ? (
-            <div className="signedInState">
-              <div className="successMark" aria-hidden="true">✓</div>
-              <p className="eyebrow">Secure access confirmed</p>
-              <h2 id="access-title">Welcome back</h2>
-              <p className="signedInMessage">
-                You are authenticated and ready to enter the scheduling system.
-              </p>
-
-              <dl className="accountSummary">
-                <div>
-                  <dt>Email</dt>
-                  <dd>{session.user.email}</dd>
-                </div>
-                <div>
-                  <dt>Role</dt>
-                  <dd>{session.user.role}</dd>
-                </div>
-                <div>
-                  <dt>Status</dt>
-                  <dd>{session.user.status}</dd>
-                </div>
-              </dl>
-
-              <a className="primaryButton primaryLink" href="/dashboard">
-                Continue to dashboard
-              </a>
-              <button className="textButton" type="button" onClick={handleLogout}>
-                Sign out
-              </button>
-            </div>
-          ) : invitationMode ? (
+      <section
+        className="accessPanel invitationAccessPanel"
+        aria-labelledby="access-title"
+      >
+        <div className="accessCard invitationAccessCard">
+          {invitationMode ? (
             <>
-              <div className="mobileBrand" aria-hidden="true">ES</div>
-              <p className="eyebrow">Employee invitation</p>
-              <h2 id="access-title">Create your password</h2>
+              <img
+                className="mobileBrandLogo"
+                src="/glanzio-reinigung-logo.png"
+                alt="Glanzio Reinigung"
+              />
+              <LoginAccessIcon />
+              <p className="eyebrow">Sichere Mitarbeitereinladung</p>
+              <h2 id="access-title">Konto aktivieren</h2>
               <p className="formIntroduction">
-                Your administrator has approved this account. Choose a private
-                password to activate it and sign in.
+                Legen Sie Ihr persönliches Passwort fest und bestätigen Sie kurz,
+                dass Sie ein Mensch sind. Danach gelangen Sie direkt zu Ihrem Dashboard.
               </p>
 
-              <form className="loginForm" onSubmit={handleInvitation} noValidate>
-                <label htmlFor="new-password">New password</label>
+              <form
+                className="loginForm invitationForm"
+                onSubmit={handleInvitation}
+                noValidate
+              >
+                <label htmlFor="new-password">Neues Passwort</label>
                 <input
                   id="new-password"
                   name="newPassword"
                   type="password"
                   autoComplete="new-password"
-                  placeholder="At least 12 characters"
+                  placeholder="Sicheres Passwort eingeben"
                   value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  minLength={12}
+                  onChange={(event) => {
+                    setNewPassword(event.target.value);
+                    setError("");
+                  }}
+                  aria-describedby="password-requirements"
+                  aria-invalid={newPassword.length > 0 && !passwordMeetsRequirements}
                   required
                 />
 
+                <div
+                  id="password-requirements"
+                  className="passwordRequirements"
+                  aria-label="Passwortanforderungen"
+                >
+                  {passwordChecks.map((requirement) => (
+                    <span
+                      key={requirement.label}
+                      className={
+                        newPassword.length === 0
+                          ? ""
+                          : requirement.valid
+                            ? "isValid"
+                            : "isInvalid"
+                      }
+                    >
+                      <i aria-hidden="true">{requirement.valid ? "✓" : "•"}</i>
+                      {requirement.label}
+                    </span>
+                  ))}
+                </div>
+
+                {newPassword.length > 0 && !passwordMeetsRequirements ? (
+                  <p className="passwordAlert" role="status">
+                    Das Passwort erfüllt noch nicht alle Anforderungen.
+                  </p>
+                ) : null}
+
                 <label className="confirmPasswordLabel" htmlFor="confirm-password">
-                  Confirm password
+                  Passwort bestätigen
                 </label>
                 <input
                   id="confirm-password"
                   name="confirmPassword"
                   type="password"
                   autoComplete="new-password"
-                  placeholder="Repeat your password"
+                  placeholder="Passwort wiederholen"
                   value={confirmPassword}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                  minLength={12}
+                  onChange={(event) => {
+                    setConfirmPassword(event.target.value);
+                    setError("");
+                  }}
+                  aria-invalid={confirmPassword.length > 0 && !passwordsMatch}
                   required
                 />
+                {confirmPassword.length > 0 && !passwordsMatch ? (
+                  <p className="passwordAlert" role="status">
+                    Die Passwörter stimmen noch nicht überein.
+                  </p>
+                ) : null}
+
+                <label
+                  className={`humanConfirmation${humanConfirmed ? " isConfirmed" : ""}`}
+                  htmlFor="human-confirmation"
+                >
+                  <input
+                    id="human-confirmation"
+                    name="humanConfirmation"
+                    type="checkbox"
+                    checked={humanConfirmed}
+                    onChange={(event) => {
+                      setHumanConfirmed(event.target.checked);
+                      setError("");
+                    }}
+                  />
+                  <span>
+                    <strong>
+                      {humanConfirmed ? "Bestätigt" : "Ich bin ein Mensch"}
+                    </strong>
+                    <small>
+                      {humanConfirmed
+                        ? "Sie haben die persönliche Kontoaktivierung bestätigt."
+                        : "Ich führe diese Kontoaktivierung selbst durch."}
+                    </small>
+                  </span>
+                </label>
+
+                <div className="botField" aria-hidden="true">
+                  <label htmlFor="company-website">Website</label>
+                  <input
+                    id="company-website"
+                    name="companyWebsite"
+                    type="text"
+                    tabIndex={-1}
+                    autoComplete="off"
+                    value={companyWebsite}
+                    onChange={(event) => setCompanyWebsite(event.target.value)}
+                  />
+                </div>
 
                 {error ? (
                   <p className="formError" role="alert">{error}</p>
@@ -302,13 +421,16 @@ export default function Home() {
                   type="submit"
                   disabled={
                     isSubmitting ||
-                    newPassword.length < 12 ||
-                    confirmPassword.length < 12
+                    !passwordMeetsRequirements ||
+                    !passwordsMatch ||
+                    !humanConfirmed
                   }
                 >
-                  {isSubmitting ? "Activating account…" : "Activate my account"}
+                  {isSubmitting ? "Konto wird aktiviert…" : "Konto aktivieren"}
                 </button>
               </form>
+
+              <PortalLegalSummary onOpen={setLegalPanel} />
 
               <button
                 className="textButton invitationBackButton"
@@ -319,47 +441,50 @@ export default function Home() {
                   clearInvitationFromAddress();
                 }}
               >
-                Back to sign in
+                Zurück zur Anmeldung
               </button>
             </>
+          ) : isRestoringSession ? (
+            <div className="sessionLoading" role="status">
+              <span className="loadingDot" aria-hidden="true" />
+              Checking your session…
+            </div>
           ) : (
             <>
-              <div className="mobileBrand" aria-hidden="true">ES</div>
-              <p className="eyebrow">Secure team access</p>
-              <h2 id="access-title">Welcome back</h2>
+              <img
+                className="mobileBrandLogo"
+                src="/glanzio-reinigung-logo.png"
+                alt="Glanzio Reinigung"
+              />
+              <LoginAccessIcon />
+              <p className="eyebrow">Sicherer Teamzugang</p>
+              <h2 id="access-title">Einloggen</h2>
               <p className="formIntroduction">
-                Sign in with the account created for you by your administrator.
+                Melden Sie sich mit Ihrem persönlichen Glanzio-Konto an.
               </p>
 
               <form className="loginForm" onSubmit={handleLogin} noValidate>
-                <label htmlFor="email">Email address</label>
+                <label htmlFor="email">Identifikationsnummer oder E-Mail-Adresse</label>
                 <input
                   id="email"
-                  name="email"
-                  type="email"
+                  name="identifier"
+                  type="text"
                   autoComplete="username"
-                  placeholder="name@company.com"
+                  placeholder="z. B. AMT359 / Admin-E-Mail"
+                  maxLength={320}
+                  autoCapitalize="none"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   required
                 />
 
-                <div className="passwordLabelRow">
-                  <label htmlFor="password">Password</label>
-                  <button
-                    className="showPasswordButton"
-                    type="button"
-                    onClick={() => setShowPassword((current) => !current)}
-                  >
-                    {showPassword ? "Hide" : "Show"}
-                  </button>
-                </div>
+                <label className="loginPasswordLabel" htmlFor="password">Passwort</label>
                 <input
                   id="password"
                   name="password"
-                  type={showPassword ? "text" : "password"}
+                  type="password"
                   autoComplete="current-password"
-                  placeholder="Enter your password"
+                  placeholder="Passwort eingeben"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   required
@@ -374,23 +499,30 @@ export default function Home() {
                   type="submit"
                   disabled={isSubmitting || !email || !password}
                 >
-                  {isSubmitting ? "Signing in…" : "Sign in securely"}
+                  {isSubmitting ? "Anmeldung läuft…" : "Anmelden"}
                 </button>
               </form>
 
               <p className="accountHelp">
-                No account yet? Ask an administrator to create your employee
-                account.
+                Noch kein Konto? Ihr Administrator erstellt Ihren persönlichen
+                Mitarbeiterzugang.
               </p>
+              <PortalLegalSummary onOpen={setLegalPanel} />
             </>
           )}
         </div>
 
         <p className="securityNote">
-          Protected by encrypted credentials and role-based access.
+          Geschützt durch verschlüsselte Zugangsdaten und rollenbasierte Berechtigungen.
         </p>
       </section>
+
+      {legalPanel ? (
+        <PortalLegalDialog
+          panel={legalPanel}
+          onClose={() => setLegalPanel(null)}
+        />
+      ) : null}
     </main>
   );
 }
-

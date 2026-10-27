@@ -1,8 +1,10 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import { useState, type FormEvent } from "react";
 import {
-  API_BASE_URL,
+  API_BASE_URL, authenticatedFetch,
   responseMessage,
 } from "../../lib/auth-client";
 import type {
@@ -19,6 +21,7 @@ export default function CreateClientForm({
   accessToken,
   onClientCreated,
 }: CreateClientFormProps) {
+  const { t } = useDashboardLanguage();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -81,7 +84,7 @@ export default function CreateClientForm({
     setSuccess("");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/clients`, {
+      const response = await authenticatedFetch(`${API_BASE_URL}/clients`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -115,53 +118,53 @@ export default function CreateClientForm({
       <header className="entityFormHeader">
         <span className="entityFormIcon" aria-hidden="true">◇</span>
         <div>
-          <p className="entityFormEyebrow">New relationship</p>
-          <h2>Add a client</h2>
-          <p>Register the organization that will receive your cleaning services.</p>
+          <p className="entityFormEyebrow">{t("New relationship")}</p>
+          <h2>{t("Add a client")}</h2>
+          <p>{t("Register the organization that will receive your cleaning services.")}</p>
         </div>
       </header>
 
       <form className="entityForm" onSubmit={handleSubmit}>
         <div className="formGrid">
         <div className="formField formFieldWide">
-          <label htmlFor="companyName">Company name</label>
+          <label htmlFor="companyName">{t("Company name")}</label>
           <input
             id="companyName"
             name="companyName"
             type="text"
             autoComplete="organization"
             maxLength={200}
-            placeholder="Riverside Offices"
+            placeholder={t("Riverside Offices")}
             required
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="contactName">Contact name</label>
+          <label htmlFor="contactName">{t("Contact name")}</label>
           <input
             id="contactName"
             name="contactName"
             type="text"
             autoComplete="name"
             maxLength={200}
-            placeholder="Primary contact"
+            placeholder={t("Primary contact")}
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="clientEmail">Email address</label>
+          <label htmlFor="clientEmail">{t("Email address")}</label>
           <input
             id="clientEmail"
             name="email"
             type="email"
             autoComplete="email"
             maxLength={320}
-            placeholder="contact@company.fr"
+            placeholder={t("contact@company.fr")}
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="clientPhone">Phone number</label>
+          <label htmlFor="clientPhone">{t("Phone number")}</label>
           <input
             id="clientPhone"
             name="phone"
@@ -173,21 +176,21 @@ export default function CreateClientForm({
         </div>
 
         <div className="formField formFieldWide">
-          <label htmlFor="clientNotes">Notes</label>
+          <label htmlFor="clientNotes">{t("Notes")}</label>
           <textarea
             id="clientNotes"
             name="notes"
             rows={4}
             maxLength={5000}
-            placeholder="Key contacts, contract context or service preferences…"
+            placeholder={t("Key contacts, contract context or service preferences…")}
           />
         </div>
         </div>
 
         <footer className="formActions">
-          <p>You can attach one or more cleaning sites next.</p>
+          <p>{t("You can attach one or more cleaning sites next.")}</p>
           <button type="submit" disabled={submitting}>
-            {submitting ? "Creating client…" : "Create client"}
+            {submitting ? t("Creating client…") : t("Create client")}
             <span aria-hidden="true">→</span>
           </button>
         </footer>

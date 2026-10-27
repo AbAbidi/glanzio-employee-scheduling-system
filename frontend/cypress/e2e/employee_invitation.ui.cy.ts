@@ -43,7 +43,7 @@ describe("Employee invitation form UI", () => {   //
 
     cy.get("#email")
       .should("be.visible")
-      .and("have.attr", "required")
+      .and("not.have.attr", "required")
 
       cy.get("#email")
       .type("sofia.ui@example.com")

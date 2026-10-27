@@ -1,5 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '../generated/prisma/client';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { AssignmentStatus, Prisma, UserRole } from '../generated/prisma/client';
+import type { AuthenticatedUser } from '../common/auth/authenticated-user.type';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { ClientQueryDto } from './dto/client-query.dto';
@@ -38,7 +43,7 @@ export class ClientsService {
   async list(query: ClientQueryDto) {
     const search = query.search?.trim();
     const where: Prisma.ClientWhereInput = {
-      active: query.active,
+      active: query.active ?? true,
       OR: search
         ? [
             { companyName: { contains: search, mode: 'insensitive' } },
@@ -71,11 +76,13 @@ export class ClientsService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, actor?: AuthenticatedUser) {
     const client = await this.prisma.client.findUnique({
       where: { id },
       include: {
         sites: {
+          where:
+            actor?.role === UserRole.MANAGER ? { active: true } : undefined,
           orderBy: { name: 'asc' },
           include: {
             _count: { select: { assignments: true } },
@@ -92,13 +99,22 @@ export class ClientsService {
     return client;
   }
 
-  async overview(id: string) {
-    const client = await this.findOne(id);
+  async overview(id: string, actor?: AuthenticatedUser) {
+    const client = await this.findOne(id, actor);
     const assignments = await this.prisma.workAssignment.findMany({
-      where: { site: { clientId: id } },
+      where: {
+        site: {
+          clientId: id,
+          ...(actor?.role === UserRole.MANAGER ? { active: true } : {}),
+        },
+      },
       include: {
         site: { select: { id: true, name: true, city: true } },
         employees: {
+          where:
+            actor?.role === UserRole.MANAGER
+              ? { employee: { active: true } }
+              : undefined,
           include: {
             employee: {
               select: { id: true, firstName: true, lastName: true },
@@ -138,6 +154,7 @@ export class ClientsService {
   }
 
   async setStatus(actorUserId: string, id: string, input: SetClientStatusDto) {
+    if (!input.active) return this.archive(actorUserId, id);
     await this.findOne(id);
     const client = await this.prisma.client.update({
       where: { id },
@@ -157,6 +174,18 @@ export class ClientsService {
   async archive(actorUserId: string, id: string) {
     await this.findOne(id);
     const client = await this.prisma.$transaction(async (transaction) => {
+      const openAssignments = await transaction.workAssignment.count({
+        where: {
+          site: { clientId: id },
+          status: { in: [AssignmentStatus.DRAFT, AssignmentStatus.SCHEDULED] },
+          endAt: { gt: new Date() },
+        },
+      });
+      if (openAssignments > 0) {
+        throw new ConflictException(
+          'Resolve future or ongoing assignments before archiving this client. Reassign or cancel them first; no assignments have been changed.',
+        );
+      }
       await transaction.cleaningSite.updateMany({
         where: { clientId: id },
         data: { active: false },

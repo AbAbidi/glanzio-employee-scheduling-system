@@ -15,6 +15,10 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import {
+  ManagerScope,
+  ManagerScopeGuard,
+} from '../common/guards/manager-scope.guard';
 import { UserRole } from '../generated/prisma/client';
 import { ClientsService } from './clients.service';
 import { ClientQueryDto } from './dto/client-query.dto';
@@ -23,8 +27,9 @@ import { SetClientStatusDto } from './dto/set-client-status.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 
 @Controller('clients')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN)
+@UseGuards(JwtAuthGuard, RolesGuard, ManagerScopeGuard)
+@ManagerScope('client')
+@Roles(UserRole.ADMIN, UserRole.MANAGER)
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
 
@@ -42,13 +47,19 @@ export class ClientsController {
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.clientsService.findOne(id);
+  findOne(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.clientsService.findOne(id, user);
   }
 
   @Get(':id/overview')
-  overview(@Param('id', ParseUUIDPipe) id: string) {
-    return this.clientsService.overview(id);
+  overview(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.clientsService.overview(id, user);
   }
 
   @Patch(':id')
@@ -61,6 +72,7 @@ export class ClientsController {
   }
 
   @Patch(':id/status')
+  @Roles(UserRole.ADMIN)
   setStatus(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -70,6 +82,7 @@ export class ClientsController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.ADMIN)
   archive(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

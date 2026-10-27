@@ -1,9 +1,11 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import "leaflet/dist/leaflet.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CircleMarker, Map as LeafletMap, Polyline } from "leaflet";
-import { API_BASE_URL, responseMessage } from "../../lib/auth-client";
+import { API_BASE_URL, authenticatedFetch, responseMessage } from "../../lib/auth-client";
 import type { MapLocation, RoutePreview } from "./types";
 
 type PointMode = "departure" | "destination";
@@ -44,6 +46,7 @@ export default function LocationMap({
   onDestinationChange,
   onRouteChange,
 }: LocationMapProps) {
+  const { t } = useDashboardLanguage();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const departureMarkerRef = useRef<CircleMarker | null>(null);
@@ -126,7 +129,7 @@ export default function LocationMap({
       setError("");
 
       try {
-        const response = await fetch(`${API_BASE_URL}/calendar/reverse-geocode`, {
+        const response = await authenticatedFetch(`${API_BASE_URL}/calendar/reverse-geocode`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -164,8 +167,8 @@ export default function LocationMap({
       if (disposed || !containerRef.current) return;
 
       const map = L.map(containerRef.current, {
-        zoomControl: true,
-        attributionControl: true,
+        zoomControl: false,
+        attributionControl: false,
       }).setView(BERLIN_POSITION, 12);
 
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -226,10 +229,10 @@ export default function LocationMap({
           destinationMarkerRef.current.setLatLng(position);
         } else {
           destinationMarkerRef.current = L.circleMarker(position, {
-            radius: 9,
+            radius: 10,
             color: "#ffffff",
             weight: 4,
-            fillColor: "#174f43",
+            fillColor: "#dc2626",
             fillOpacity: 1,
           }).addTo(map);
         }
@@ -274,7 +277,7 @@ export default function LocationMap({
       setError("");
 
       try {
-        const response = await fetch(`${API_BASE_URL}/calendar/route-preview`, {
+        const response = await authenticatedFetch(`${API_BASE_URL}/calendar/route-preview`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -335,7 +338,7 @@ export default function LocationMap({
     setError("");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/calendar/location-search`, {
+      const response = await authenticatedFetch(`${API_BASE_URL}/calendar/location-search`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -366,7 +369,7 @@ export default function LocationMap({
 
   return (
     <div className="locationPicker">
-      <div className="locationPointSelector" aria-label="Route positions">
+      <div className="locationPointSelector" aria-label={t("Route positions")}>
         <button
           className={activePoint === "departure" ? "isSelected" : ""}
           type="button"
@@ -374,8 +377,8 @@ export default function LocationMap({
         >
           <span className="mapPointDot mapPointDeparture" aria-hidden="true" />
           <span>
-            <small>Starting point</small>
-            <strong>{pointDescription(departure, "Select departure position")}</strong>
+            <small>{t("Starting point")}</small>
+            <strong>{pointDescription(departure, t("Select departure position"))}</strong>
           </span>
         </button>
         <button
@@ -386,8 +389,8 @@ export default function LocationMap({
         >
           <span className="mapPointDot mapPointDestination" aria-hidden="true" />
           <span>
-            <small>{allowDestinationSelection ? "Cleaning destination" : "Saved destination"}</small>
-            <strong>{pointDescription(destination, "Select destination position")}</strong>
+            <small>{allowDestinationSelection ? t("Cleaning destination") : t("Saved destination")}</small>
+            <strong>{pointDescription(destination, t("Select destination position"))}</strong>
           </span>
         </button>
       </div>
@@ -406,20 +409,24 @@ export default function LocationMap({
           placeholder={`Search the ${pointLabel} in Berlin`}
         />
         <button type="button" disabled={loading} onClick={() => void handleSearch()}>
-          {loading ? "Locating..." : "Search"}
+          {loading ? t("Locating...") : t("Search")}
         </button>
       </div>
 
-      <div className="locationMap" ref={containerRef} aria-label="Select route positions on the map" />
+      <div className="locationMap" ref={containerRef} aria-label={t("Select route positions on the map")} />
+      <a
+        className="mapProviderCredit"
+        href="https://www.openstreetmap.org/copyright"
+        rel="noreferrer"
+        target="_blank"
+      >{t("Map data © OpenStreetMap contributors")}</a>
       <div className="mapLegend" aria-hidden="true">
-        <span><i className="mapPointDeparture" /> Starting point</span>
-        <span><i className="mapPointDestination" /> Cleaning destination</span>
-        <span><i className="mapRouteLine" /> Driving route</span>
+        <span><i className="mapPointDeparture" />{t(" Starting point")}</span>
+        <span><i className="mapPointDestination" />{t(" Cleaning destination")}</span>
+        <span><i className="mapRouteLine" />{t(" Driving route")}</span>
       </div>
-      {routing ? <p className="routeDrawingStatus">Drawing the fastest driving route...</p> : null}
-      <p className="locationHint">
-        Select a point above, then search or click on the map. The blue point is the departure; the green point is the cleaning site.
-      </p>
+      {routing ? <p className="routeDrawingStatus">{t("Drawing the fastest driving route...")}</p> : null}
+      <p className="locationHint">{t("Select a point above, then search or click on the map. The blue point is the departure; the red point is the cleaning site.")}</p>
 
       {error ? <p className="inlineFormError" role="alert">{error}</p> : null}
     </div>

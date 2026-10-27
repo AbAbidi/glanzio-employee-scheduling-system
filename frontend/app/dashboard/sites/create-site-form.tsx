@@ -1,12 +1,14 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import {
   useEffect,
   useState,
   type FormEvent,
 } from "react";
 import {
-  API_BASE_URL,
+  API_BASE_URL, authenticatedFetch,
   responseMessage,
 } from "../../lib/auth-client";
 import type {
@@ -27,6 +29,7 @@ export default function CreateSiteForm({
   accessToken,
   onSiteCreated,
 }: CreateSiteFormProps) {
+  const { t } = useDashboardLanguage();
   const [clients, setClients] =
     useState<ClientListItem[]>([]);
 
@@ -41,7 +44,7 @@ export default function CreateSiteForm({
 
     async function loadClients() {
       try {
-        const response = await fetch(
+        const response = await authenticatedFetch(
           `${API_BASE_URL}/clients?active=true&page=1&pageSize=100`,
           {
             headers: {
@@ -173,7 +176,7 @@ export default function CreateSiteForm({
     setSuccess("");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/sites`, {
+      const response = await authenticatedFetch(`${API_BASE_URL}/sites`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -207,13 +210,13 @@ export default function CreateSiteForm({
       <header className="entityFormHeader">
         <span className="entityFormIcon" aria-hidden="true">⌖</span>
         <div>
-          <p className="entityFormEyebrow">Service location</p>
-          <h2>Add a cleaning site</h2>
-          <p>Describe the place once so every future assignment starts with the right context.</p>
+          <p className="entityFormEyebrow">{t("Service location")}</p>
+          <h2>{t("Add a cleaning site")}</h2>
+          <p>{t("Describe the place once so every future assignment starts with the right context.")}</p>
         </div>
       </header>
 
-      {clientsLoading ? <p className="formNotice">Loading client options…</p> : null}
+      {clientsLoading ? <p className="formNotice">{t("Loading client options…")}</p> : null}
 
       {clientsError ? (
         <p className="formMessage formMessageError" role="alert">{clientsError}</p>
@@ -222,13 +225,13 @@ export default function CreateSiteForm({
       {!clientsLoading &&
       !clientsError &&
       clients.length === 0 ? (
-        <p className="formNotice">Create an active client before creating a site.</p>
+        <p className="formNotice">{t("Create an active client before creating a site.")}</p>
       ) : null}
 
       <form className="entityForm" onSubmit={handleSubmit}>
         <div className="formGrid">
         <div className="formField formFieldWide">
-          <label htmlFor="siteClient">Client</label>
+          <label htmlFor="siteClient">{t("Client")}</label>
           <select
             id="siteClient"
             name="clientId"
@@ -239,7 +242,7 @@ export default function CreateSiteForm({
               clients.length === 0
             }
           >
-            <option value="">Select a client</option>
+            <option value="">{t("Select a client")}</option>
 
             {clients.map((client) => (
               <option key={client.id} value={client.id}>
@@ -250,44 +253,44 @@ export default function CreateSiteForm({
         </div>
 
         <div className="formField formFieldWide">
-          <label htmlFor="siteName">Site name</label>
+          <label htmlFor="siteName">{t("Site name")}</label>
           <input
             id="siteName"
             name="name"
             type="text"
             maxLength={200}
-            placeholder="Riverside main office"
+            placeholder={t("Riverside main office")}
             required
           />
         </div>
 
         <div className="formField formFieldWide">
-          <label htmlFor="addressLine1">Address line 1</label>
+          <label htmlFor="addressLine1">{t("Address line 1")}</label>
           <input
             id="addressLine1"
             name="addressLine1"
             type="text"
             autoComplete="address-line1"
             maxLength={250}
-            placeholder="12 Avenue de la République"
+            placeholder={t("12 Avenue de la République")}
             required
           />
         </div>
 
         <div className="formField formFieldWide">
-          <label htmlFor="addressLine2">Address line 2</label>
+          <label htmlFor="addressLine2">{t("Address line 2")}</label>
           <input
             id="addressLine2"
             name="addressLine2"
             type="text"
             autoComplete="address-line2"
             maxLength={250}
-            placeholder="Building, floor or access point"
+            placeholder={t("Building, floor or access point")}
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="postalCode">Postal code</label>
+          <label htmlFor="postalCode">{t("Postal code")}</label>
           <input
             id="postalCode"
             name="postalCode"
@@ -299,20 +302,20 @@ export default function CreateSiteForm({
         </div>
 
         <div className="formField">
-          <label htmlFor="city">City</label>
+          <label htmlFor="city">{t("City")}</label>
           <input
             id="city"
             name="city"
             type="text"
             autoComplete="address-level2"
             maxLength={120}
-            placeholder="Paris"
+            placeholder={t("Paris")}
             required
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="countryCode">Country code</label>
+          <label htmlFor="countryCode">{t("Country code")}</label>
           <input
             id="countryCode"
             name="countryCode"
@@ -325,46 +328,42 @@ export default function CreateSiteForm({
         </div>
 
         <div className="formField">
-          <label htmlFor="estimatedDurationMinutes">
-            Estimated duration
-          </label>
+          <label htmlFor="estimatedDurationMinutes">{t("Estimated duration")}</label>
           <input
             id="estimatedDurationMinutes"
             name="estimatedDurationMinutes"
             type="number"
             min="1"
             step="1"
-            placeholder="120 minutes"
+            placeholder={t("120 minutes")}
           />
         </div>
 
         <div className="formField formFieldWide">
-          <label htmlFor="requiredEquipment">
-            Required equipment
-          </label>
+          <label htmlFor="requiredEquipment">{t("Required equipment")}</label>
           <input
             id="requiredEquipment"
             name="requiredEquipment"
             type="text"
-            placeholder="Vacuum, ladder, window-cleaning kit"
+            placeholder={t("Vacuum, ladder, window-cleaning kit")}
           />
-          <small>Separate equipment names with commas.</small>
+          <small>{t("Separate equipment names with commas.")}</small>
         </div>
 
         <div className="formField formFieldWide">
-          <label htmlFor="siteNotes">Notes</label>
+          <label htmlFor="siteNotes">{t("Notes")}</label>
           <textarea
             id="siteNotes"
             name="notes"
             rows={4}
             maxLength={5000}
-            placeholder="Access instructions, security rules or important details…"
+            placeholder={t("Access instructions, security rules or important details…")}
           />
         </div>
         </div>
 
         <footer className="formActions">
-          <p>This location will be available in assignment planning.</p>
+          <p>{t("This location will be available in assignment planning.")}</p>
           <button
             type="submit"
             disabled={
@@ -374,8 +373,8 @@ export default function CreateSiteForm({
             }
           >
             {submitting
-              ? "Creating cleaning site…"
-              : "Create cleaning site"}
+              ? t("Creating cleaning site…")
+              : t("Create cleaning site")}
             <span aria-hidden="true">→</span>
           </button>
         </footer>

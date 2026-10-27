@@ -14,6 +14,10 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import {
+  ManagerScope,
+  ManagerScopeGuard,
+} from '../common/guards/manager-scope.guard';
 import { UserRole } from '../generated/prisma/client';
 import { CreateSiteDto } from './dto/create-site.dto';
 import { SetSiteStatusDto } from './dto/set-site-status.dto';
@@ -22,8 +26,9 @@ import { UpdateSiteDto } from './dto/update-site.dto';
 import { SitesService } from './sites.service';
 
 @Controller('sites')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN)
+@UseGuards(JwtAuthGuard, RolesGuard, ManagerScopeGuard)
+@ManagerScope('site')
+@Roles(UserRole.ADMIN, UserRole.MANAGER)
 export class SitesController {
   constructor(private readonly sitesService: SitesService) {}
 
@@ -52,6 +57,7 @@ export class SitesController {
   }
 
   @Patch(':id/status')
+  @Roles(UserRole.ADMIN)
   setStatus(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

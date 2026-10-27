@@ -1,8 +1,10 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import { useState, type FormEvent } from "react";
 import {
-  API_BASE_URL,
+  API_BASE_URL, authenticatedFetch,
   responseMessage,
 } from "../../lib/auth-client";
 import type {
@@ -15,14 +17,18 @@ import InvitationLinkPanel from "./invitation-link-panel";
 
 type CreateEmployeeFormProps = {
   accessToken: string;
+  canCreateManager?: boolean;
   onEmployeeCreated: (employee: Employee) => void;
 };
 
 export default function CreateEmployeeForm({
   accessToken,
+  canCreateManager = false,
   onEmployeeCreated,
 }: CreateEmployeeFormProps) {
+  const { t } = useDashboardLanguage();
   const [submitting, setSubmitting] = useState(false);
+  const [role, setRole] = useState<"EMPLOYEE" | "MANAGER">("EMPLOYEE");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [invitation, setInvitation] =
@@ -42,14 +48,15 @@ export default function CreateEmployeeForm({
     ).trim();
 
     const input: CreateEmployeeInput = {
-      email: String(formData.get("email") ?? "").trim(),
+      ...(String(formData.get("email") ?? "").trim() ? { email: String(formData.get("email")).trim() } : {}),
       firstName: String(
         formData.get("firstName") ?? "",
       ).trim(),
       lastName: String(
         formData.get("lastName") ?? "",
       ).trim(),
-      isStudent: formData.get("isStudent") === "on",
+      isStudent: role === "EMPLOYEE" && formData.get("isStudent") === "on",
+      ...(canCreateManager && role === "MANAGER" ? { role } : {}),
     };
 
     if (phone) {
@@ -66,7 +73,7 @@ export default function CreateEmployeeForm({
     setInvitation(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/employees`, {
+      const response = await authenticatedFetch(`${API_BASE_URL}/employees`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -91,6 +98,7 @@ export default function CreateEmployeeForm({
       setInvitation(result.invitation);
 
       form.reset();
+      setRole("EMPLOYEE");
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -107,67 +115,67 @@ export default function CreateEmployeeForm({
       <header className="entityFormHeader">
         <span className="entityFormIcon" aria-hidden="true">+</span>
         <div>
-          <p className="entityFormEyebrow">Grow your team</p>
-          <h2>Invite an employee</h2>
-          <p>Create their profile now. They will choose their password from the secure invitation.</p>
+          <p className="entityFormEyebrow">{t("Grow your team")}</p>
+          <h2>{t("Invite an employee")}</h2>
+          <p>{t("Create their profile now. They will choose their password from the secure invitation.")}</p>
         </div>
       </header>
 
       <form className="entityForm" onSubmit={handleSubmit}>
+        {canCreateManager ? <label className="formField">{t("Account access")}<select name="role" value={role} onChange={(event) => setRole(event.target.value as "EMPLOYEE" | "MANAGER")}><option value="EMPLOYEE">{t("Standard employee")}</option><option value="MANAGER">Admin / Gestionnaire</option></select><small>{t("Manager access excludes logs, feedback, archives and account security settings.")}</small></label> : null}
         <div className="formGrid">
         <div className="formField">
-          <label htmlFor="firstName">First name</label>
+          <label htmlFor="firstName">{t("First name")}</label>
           <input
             id="firstName"
             name="firstName"
             type="text"
             autoComplete="given-name"
             maxLength={100}
-            placeholder="Amelia"
+            placeholder={t("First name")}
             required
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="lastName">Last name</label>
+          <label htmlFor="lastName">{t("Last name")}</label>
           <input
             id="lastName"
             name="lastName"
             type="text"
             autoComplete="family-name"
             maxLength={100}
-            placeholder="Martin"
+            placeholder={t("Last name")}
             required
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="email">Email address</label>
+          <label htmlFor="email">{t("Email address")} ({t("Optional")})</label>
           <input
             id="email"
             name="email"
             type="email"
             autoComplete="email"
             maxLength={320}
-            placeholder="amelia@clarityclean.fr"
-            required
+            placeholder={t("Email address")}
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="phone">Phone number</label>
+          <label htmlFor="phone">{t("Phone number")}</label>
           <input
             id="phone"
             name="phone"
             type="tel"
             autoComplete="tel"
             maxLength={30}
-            placeholder="+33 6 12 34 56 78"
+            placeholder={t("Phone number")}
           />
         </div>
 
         <div className="formField">
-          <label htmlFor="hourlyRate">Hourly rate</label>
+          <label htmlFor="hourlyRate">{t("Hourly rate")}</label>
           <input
             id="hourlyRate"
             name="hourlyRate"
@@ -175,24 +183,24 @@ export default function CreateEmployeeForm({
             inputMode="decimal"
             min="0"
             step="0.01"
-            placeholder="18.50"
+            placeholder={t("Hourly rate (€)")}
           />
         </div>
 
         <label className="studentToggle">
-          <input name="isStudent" type="checkbox" />
+          <input name="isStudent" type="checkbox" disabled={role === "MANAGER"} />
           <span className="toggleTrack" aria-hidden="true"><i /></span>
           <span>
-            <strong>Student employee</strong>
-            <small>Track the monthly 80-hour limit as an insight.</small>
+            <strong>{t("Student employee")}</strong>
+            <small>{t("Track 10h/week and 40h/month from October 2026. Warnings do not block assignments.")}</small>
           </span>
         </label>
         </div>
 
         <footer className="formActions">
-          <p>An invitation link is generated after creation.</p>
+          <p>{t("An invitation link is generated after creation.")}</p>
           <button type="submit" disabled={submitting}>
-            {submitting ? "Creating invitation…" : "Invite employee"}
+            {submitting ? t("Creating invitation…") : t("Invite employee")}
             <span aria-hidden="true">→</span>
           </button>
         </footer>
@@ -202,9 +210,9 @@ export default function CreateEmployeeForm({
 
       {success ? <p className="formMessage formMessageSuccess" role="status">{success}</p> : null}
 
-      {invitation?.developmentInvitationUrl ? (
+      {invitation?.invitationUrl || invitation?.developmentInvitationUrl ? (
         <InvitationLinkPanel
-          url={invitation.developmentInvitationUrl}
+          url={invitation.invitationUrl ?? invitation.developmentInvitationUrl!}
           expiresAt={invitation.expiresAt}
         />
       ) : null}

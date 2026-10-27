@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -21,6 +22,8 @@ import type { EmployeeQueryDto } from './dto/employee-query.dto';
 import type { SetEmployeeStatusDto } from './dto/set-employee-status.dto';
 import type { UpdateEmployeeDto } from './dto/update-employee.dto';
 import type { UpdateMyProfileDto } from './dto/update-my-profile.dto';
+import type { AuthenticatedUser } from '../common/auth/authenticated-user.type';
+import type { SetAccessRoleDto } from './dto/set-access-role.dto';
 
 const EMPLOYEE_INCLUDE = {
   user: {
@@ -44,11 +47,25 @@ export class EmployeesService {
     private readonly configService: ConfigService,
   ) {}
 
-  async create(actorUserId: string, input: CreateEmployeeDto) {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: input.email },
-      select: { id: true },
-    });
+  async create(
+    actorUserId: string,
+    input: CreateEmployeeDto,
+    actor?: AuthenticatedUser,
+  ) {
+    if (input.role === UserRole.MANAGER && actor?.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only the owner can grant manager access.');
+    }
+    if (input.role === UserRole.MANAGER && input.isStudent) {
+      throw new BadRequestException(
+        'A manager must have a standard, non-student employee profile.',
+      );
+    }
+    const existingUser = input.email
+      ? await this.prisma.user.findUnique({
+          where: { email: input.email },
+          select: { id: true },
+        })
+      : null;
 
     if (existingUser) {
       throw new ConflictException('A user with this email already exists.');
@@ -60,7 +77,7 @@ export class EmployeesService {
         data: {
           email: input.email,
           passwordHash: null,
-          role: UserRole.EMPLOYEE,
+          role: input.role ?? UserRole.EMPLOYEE,
           status: UserStatus.INVITED,
           employee: {
             create: {
@@ -153,10 +170,13 @@ export class EmployeesService {
     return this.invitationDelivery(invitation.plainToken, invitation.expiresAt);
   }
 
-  async list(query: EmployeeQueryDto) {
+  async list(query: EmployeeQueryDto, actor?: AuthenticatedUser) {
+    if (actor?.role === UserRole.MANAGER && query.active === false) {
+      throw new ForbiddenException('Archived records are owner-only.');
+    }
     const search = query.search?.trim();
     const where: Prisma.EmployeeWhereInput = {
-      active: query.active,
+      active: query.active ?? true,
       isStudent: query.isStudent,
       OR: search
         ? [
@@ -192,7 +212,7 @@ export class EmployeesService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, actor?: AuthenticatedUser) {
     const employee = await this.prisma.employee.findUnique({
       where: { id },
       include: {
@@ -203,7 +223,7 @@ export class EmployeesService {
       },
     });
 
-    if (!employee) {
+    if (!employee || (actor?.role === UserRole.MANAGER && !employee.active)) {
       throw new NotFoundException('Employee not found.');
     }
 
@@ -212,6 +232,11 @@ export class EmployeesService {
 
   async update(actorUserId: string, id: string, input: UpdateEmployeeDto) {
     const employee = await this.findOne(id);
+    if (employee.user.role === UserRole.MANAGER && input.isStudent === true) {
+      throw new BadRequestException(
+        'A manager must keep a standard, non-student profile.',
+      );
+    }
 
     if (input.email && input.email !== employee.user.email) {
       const duplicate = await this.prisma.user.findUnique({
@@ -254,11 +279,68 @@ export class EmployeesService {
     return updated;
   }
 
+  async assertManagerCanEdit(actor: AuthenticatedUser, id: string) {
+    const target = await this.findOne(id, actor);
+    if (
+      actor.role === UserRole.MANAGER &&
+      target.user.role !== UserRole.EMPLOYEE
+    ) {
+      throw new ForbiddenException(
+        'Use your own profile/password settings; only the owner can modify privileged accounts.',
+      );
+    }
+  }
+
+  async setAccessRole(
+    actor: AuthenticatedUser,
+    id: string,
+    input: SetAccessRoleDto,
+  ) {
+    if (actor.role !== UserRole.ADMIN)
+      throw new ForbiddenException('Only the owner can change access roles.');
+    const target = await this.findOne(id);
+    if (!target.active || target.user.role === UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'Only active employee/manager profiles can change role here.',
+      );
+    }
+    if (input.role === UserRole.MANAGER && target.isStudent) {
+      throw new BadRequestException(
+        'Change the profile explicitly to standard employee before granting manager access.',
+      );
+    }
+    if (target.user.role === input.role) return target;
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.user.update({
+        where: { id: target.userId },
+        data: { role: input.role, authVersion: { increment: 1 } },
+      });
+      await transaction.refreshSession.updateMany({
+        where: { userId: target.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      await transaction.auditLog.create({
+        data: {
+          actorUserId: actor.id,
+          action: 'ACCESS_ROLE_CHANGED',
+          entityType: 'User',
+          entityId: target.userId,
+          metadata: { from: target.user.role, to: input.role },
+        },
+      });
+      return transaction.employee.findUniqueOrThrow({
+        where: { id },
+        include: EMPLOYEE_INCLUDE,
+      });
+    });
+  }
+
   async setStatus(
     actorUserId: string,
     id: string,
     input: SetEmployeeStatusDto,
   ) {
+    if (!input.active) return this.archive(actorUserId, id);
     const employee = await this.findOne(id);
 
     if (employee.user.status === UserStatus.INVITED) {
@@ -306,6 +388,18 @@ export class EmployeesService {
     const employee = await this.findOne(id);
     const now = new Date();
     const updated = await this.prisma.$transaction(async (transaction) => {
+      const openAssignments = await transaction.workAssignment.count({
+        where: {
+          employees: { some: { employeeId: id } },
+          status: { in: [AssignmentStatus.DRAFT, AssignmentStatus.SCHEDULED] },
+          endAt: { gt: now },
+        },
+      });
+      if (openAssignments > 0) {
+        throw new ConflictException(
+          'Resolve future or ongoing assignments before archiving this employee. Reassign or cancel them first; no assignments have been changed.',
+        );
+      }
       await transaction.user.update({
         where: { id: employee.userId },
         data: { status: UserStatus.INACTIVE },
@@ -557,19 +651,23 @@ export class EmployeesService {
   }
 
   private invitationDelivery(plainToken: string, expiresAt: Date) {
-    const response: {
-      expiresAt: Date;
-      developmentInvitationUrl?: string;
-    } = { expiresAt };
-
-    if (this.configService.get<string>('NODE_ENV') !== 'production') {
-      const frontendOrigin = this.configService
-        .get<string>('CORS_ORIGIN', 'http://localhost:5173')
-        .split(',')[0]
-        .trim();
-      response.developmentInvitationUrl = `${frontendOrigin}/login?invitation=${encodeURIComponent(plainToken)}`;
-    }
-
-    return response;
+    const frontendOrigin = this.configService
+      .get<string>(
+        'PUBLIC_FRONTEND_URL',
+        this.configService
+          .get<string>('CORS_ORIGIN', 'http://localhost:5173')
+          .split(',')[0]
+          .trim(),
+      )
+      .replace(/\/$/, '');
+    const invitationUrl = `${frontendOrigin}/login?invitation=${encodeURIComponent(plainToken)}`;
+    return {
+      expiresAt,
+      invitationUrl,
+      // Retain the old field only outside production for older local clients.
+      ...(this.configService.get<string>('NODE_ENV') !== 'production'
+        ? { developmentInvitationUrl: invitationUrl }
+        : {}),
+    };
   }
 }

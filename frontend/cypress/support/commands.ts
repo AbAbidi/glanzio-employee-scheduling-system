@@ -108,6 +108,7 @@ Cypress.Commands.add("mockEmployeeSession", () => {
 
         employee: {
           id: "00000000-0000-4000-8000-000000000102",
+          loginCode: "AMT359",
           firstName: "Lena",
           lastName: "Worker",
           isStudent: true,

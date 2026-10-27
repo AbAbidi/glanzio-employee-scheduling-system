@@ -1,16 +1,23 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import Link from "next/link";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  API_BASE_URL,
+  API_BASE_URL, authenticatedFetch,
   responseMessage,
   restoreSession,
   type AuthenticationResult,
 } from "../../lib/auth-client";
+import { useLiveDataVersion } from "../../lib/use-live-data-version";
+import { loadPaginatedItems } from "../../lib/paginated-items";
+import { groupCalendarEvents } from "./calendar-layout";
 import DashboardShellHeader from "../dashboard-shell-header";
 import CreateAssignmentForm from "./create-assignment-form";
 import EditAssignmentForm from "./edit-assignment-form";
+import { isWeekendDate, nextWorkingDate } from "./schedule-policy";
+import { badenWuerttembergHoliday } from "./public-holidays";
 import type {
   AssignmentListResponse,
   StudentHourWarning,
@@ -41,21 +48,21 @@ function monthDays(month: Date) {
   });
 }
 
-function timeLabel(value: string) {
-  return new Intl.DateTimeFormat("en", {
+function formatTimeLabel(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
 }
 
-function fullDateTime(value: string) {
-  return new Intl.DateTimeFormat("en", {
+function formatFullDateTime(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "full",
     timeStyle: "short",
   }).format(new Date(value));
 }
 
-function assignmentDuration(startAt: string, endAt: string) {
+function assignmentDuration(startAt: string, endAt: string, locale: string) {
   const minutes = Math.max(
     0,
     Math.round((new Date(endAt).getTime() - new Date(startAt).getTime()) / 60000),
@@ -63,8 +70,8 @@ function assignmentDuration(startAt: string, endAt: string) {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
 
-  if (hours === 0) return `${remainingMinutes} minutes`;
-  if (remainingMinutes === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  if (hours === 0) return new Intl.NumberFormat(locale, { style: "unit", unit: "minute", unitDisplay: "long" }).format(remainingMinutes);
+  if (remainingMinutes === 0) return new Intl.NumberFormat(locale, { style: "unit", unit: "hour", unitDisplay: "long" }).format(hours);
   return `${hours}h ${remainingMinutes}min`;
 }
 
@@ -72,9 +79,9 @@ type VisualStatus = "completed" | "pending" | "cancelled" | "active";
 
 function visualStatus(assignment: WorkAssignment): VisualStatus {
   if (assignment.status === "CANCELLED") return "cancelled";
+  if (assignment.status === "COMPLETED") return "completed";
   const now = Date.now();
-  if (new Date(assignment.endAt).getTime() <= now) return "completed";
-  if (new Date(assignment.startAt).getTime() <= now) return "active";
+  if (assignment.status === "SCHEDULED" && new Date(assignment.startAt).getTime() <= now && new Date(assignment.endAt).getTime() > now) return "active";
   return "pending";
 }
 
@@ -85,13 +92,11 @@ function statusLabel(status: VisualStatus) {
   return "Pending";
 }
 
-function assignmentAccent(id: string) {
-  const colors = ["#6366f1", "#0ea5e9", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316"];
-  const total = Array.from(id).reduce((sum, character) => sum + character.charCodeAt(0), 0);
-  return colors[total % colors.length];
-}
-
 export default function AssignmentsPage() {
+  const liveVersion = useLiveDataVersion();
+  const { t, locale } = useDashboardLanguage();
+  const timeLabel = (value: string) => formatTimeLabel(value, locale);
+  const fullDateTime = (value: string) => formatFullDateTime(value, locale);
   const [access, setAccess] = useState<AccessState>("checking");
   const [session, setSession] =
     useState<AuthenticationResult | null>(null);
@@ -168,15 +173,16 @@ export default function AssignmentsPage() {
           page: "1",
           pageSize: "100",
         });
-        const response = await fetch(`${API_BASE_URL}/calendar?${query}`, {
-          headers: {
-            Authorization: `Bearer ${session.accessToken}`,
-          },
-        });
-
-        if (!response.ok) throw new Error(await responseMessage(response));
-        const result = (await response.json()) as AssignmentListResponse;
-        if (active) setAssignments(result.items);
+        const items = await loadPaginatedItems(async (page) => {
+          query.set("page", String(page));
+          const response = await authenticatedFetch(`${API_BASE_URL}/calendar?${query}`);
+          if (!response.ok) throw new Error(await responseMessage(response));
+          return (await response.json()) as AssignmentListResponse;
+        }, () => active);
+        if (active) {
+          setAssignments(items);
+          setSelectedAssignment((current) => current ? items.find((item) => item.id === current.id) ?? current : null);
+        }
       } catch (requestError) {
         if (active) {
           setError(
@@ -194,7 +200,7 @@ export default function AssignmentsPage() {
     return () => {
       active = false;
     };
-  }, [session, month, refreshVersion]);
+  }, [session, month, refreshVersion, liveVersion]);
 
   const eventsByDay = useMemo(() => {
     const grouped = new Map<string, WorkAssignment[]>();
@@ -226,7 +232,12 @@ export default function AssignmentsPage() {
       setSelectedAssignment(assignment);
       setNotice(
         warnings.length > 0
-          ? `Assignment created with ${warnings.length} student-hour warning${warnings.length === 1 ? "" : "s"}.`
+          ? `Assignment created. Warning only: ${warnings
+              .map(
+                (warning) =>
+                  `${warning.employeeName}: ${(warning.plannedMinutes / 60).toFixed(1)}h planned in ${warning.period ?? warning.month}; ${(warning.limitMinutes / 60).toFixed(0)}h limit exceeded by ${(warning.exceededByMinutes / 60).toFixed(1)}h`,
+              )
+              .join("; ")}. The assignment was not blocked.`
           : "Assignment created successfully.",
       );
     } else {
@@ -253,7 +264,7 @@ export default function AssignmentsPage() {
       const endpoint = cancelMode === "series"
         ? `${API_BASE_URL}/assignments/${selectedAssignment.id}/cancel-series`
         : `${API_BASE_URL}/assignments/${selectedAssignment.id}${cancelMode === "single" ? "/cancel" : ""}`;
-      const response = await fetch(endpoint, {
+      const response = await authenticatedFetch(endpoint, {
         method: cancelMode === "delete" ? "DELETE" : "POST",
         headers: {
           Authorization: `Bearer ${session.accessToken}`,
@@ -300,43 +311,47 @@ export default function AssignmentsPage() {
   }
 
   if (access === "checking") {
-    return <main className="managementGate">Preparing the calendar...</main>;
+    return <main className="managementGate">{t("Preparing the calendar...")}</main>;
   }
 
   if (access === "signed-out" || !session) {
     return (
       <main className="managementGate">
-        <h1>Sign in required</h1>
-        <p>You must sign in to view assignments.</p>
-        <Link href="/login">Go to sign in</Link>
+        <h1>{t("Sign in required")}</h1>
+        <p>{t("You must sign in to view assignments.")}</p>
+        <Link href="/login">{t("Go to sign in")}</Link>
       </main>
     );
   }
 
-  const isAdmin = session.user.role === "ADMIN";
+  const isAdmin = session.user.role !== "EMPLOYEE";
 
   return (
     <main className="calendarWorkspace">
-      <DashboardShellHeader email={session.user.email} role={session.user.role} />
+      {!createDate && !editingAssignment && !selectedAssignment ? (
+        <DashboardShellHeader email={session.user.email} loginCode={session.user.employee?.loginCode} role={session.user.role} />
+      ) : null}
 
       <section className="calendarIntro">
         <div>
-          <p>Operations calendar</p>
-          <h1>Plan every clean with confidence.</h1>
-          <span>Choose a day, build the route and align the right team.</span>
+          <p>{t("Operations calendar")}</p>
+          <h1>{t("Plan every clean with confidence.")}</h1>
+          <span>{t("Choose a day, build the route and align the right team.")}</span>
         </div>
         {isAdmin ? (
-          <button type="button" onClick={() => setCreateDate(dateKey(new Date()))}>
-            <span aria-hidden="true">＋</span> New assignment
-          </button>
+          <button
+            type="button"
+            onClick={() => setCreateDate(dateKey(nextWorkingDate(new Date())))}
+          >
+            <span aria-hidden="true">＋</span>{t("New assignment")}</button>
         ) : null}
       </section>
 
-      <section className="calendarStatusStrip" aria-label="Assignment status guide">
-        <div><i className="statusDot statusDotCompleted" /><span>Completed</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "completed").length}</strong></div>
-        <div><i className="statusDot statusDotPending" /><span>Pending</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "pending").length}</strong></div>
-        <div><i className="statusDot statusDotActive" /><span>In progress</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "active").length}</strong></div>
-        <div><i className="statusDot statusDotCancelled" /><span>Cancelled</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "cancelled").length}</strong></div>
+      <section className="calendarStatusStrip" aria-label={t("Assignment status guide")}>
+        <div><i className="statusDot statusDotCompleted" /><span>{t("Completed")}</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "completed").length}</strong></div>
+        <div><i className="statusDot statusDotPending" /><span>{t("Pending")}</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "pending").length}</strong></div>
+        <div><i className="statusDot statusDotActive" /><span>{t("In progress")}</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "active").length}</strong></div>
+        <div><i className="statusDot statusDotCancelled" /><span>{t("Cancelled")}</span><strong>{assignments.filter((assignment) => visualStatus(assignment) === "cancelled").length}</strong></div>
       </section>
 
       {notice ? (
@@ -348,61 +363,77 @@ export default function AssignmentsPage() {
       <section className="calendarCard">
         <header className="calendarToolbar">
           <div>
-            <button type="button" aria-label="Previous month" onClick={() => moveMonth(-1)}>←</button>
-            <button type="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button>
-            <button type="button" aria-label="Next month" onClick={() => moveMonth(1)}>→</button>
+            <button type="button" aria-label={t("Previous month")} onClick={() => moveMonth(-1)}>←</button>
+            <button type="button" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>{t("Today")}</button>
+            <button type="button" aria-label={t("Next month")} onClick={() => moveMonth(1)}>→</button>
           </div>
-          <h2>{new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(month)}</h2>
-          <span>{loading ? "Updating..." : `${assignments.length} scheduled`}</span>
+          <h2>{new Intl.DateTimeFormat(locale, { month: "long", year: "numeric" }).format(month)}</h2>
+          <span>{loading ? t("Updating...") : `${assignments.length} ${t("scheduled")}`}</span>
         </header>
 
         {error ? <p className="formMessage formMessageError" role="alert">{error}</p> : null}
 
+        <div className="calendarGridScroll" tabIndex={0} role="region" aria-label={t("Assignment calendar")}>
         <div className="calendarWeekdays" aria-hidden="true">
-          {WEEKDAY_LABELS.map((label) => <span key={label}>{label}</span>)}
+          {WEEKDAY_LABELS.map((label) => <span key={label}>{t(label)}</span>)}
         </div>
 
-        <div className="monthCalendar" aria-label="Assignment calendar">
+        <div className="monthCalendar" aria-label={t("Assignment calendar")}>
           {days.map((day) => {
             const key = dateKey(day);
             const dayEvents = eventsByDay.get(key) ?? [];
             const isCurrentMonth = day.getMonth() === month.getMonth();
             const isToday = key === dateKey(new Date());
+            const isWeekend = isWeekendDate(day);
+            const holiday = badenWuerttembergHoliday(key);
 
             return (
               <div
-                className={`calendarDay${isCurrentMonth ? "" : " isOutside"}${isToday ? " isToday" : ""}`}
+                className={`calendarDay${isCurrentMonth ? "" : " isOutside"}${isToday ? " isToday" : ""}${isWeekend ? " isWeekend" : ""}${holiday ? " isHoliday" : ""}`}
                 key={key}
               >
-                <button
-                  className="calendarDayNumber"
-                  type="button"
-                  disabled={!isAdmin}
-                  aria-label={isAdmin ? `Create assignment on ${day.toDateString()}` : day.toDateString()}
-                  onClick={() => setCreateDate(key)}
-                >
-                  {day.getDate()}
-                </button>
+                <div className="calendarDayTop">
+                  {holiday ? <span className="calendarHolidayLabel" title={`${holiday} · Baden-Württemberg`}>{holiday}</span> : null}
+                  <button
+                    className="calendarDayNumber"
+                    type="button"
+                    disabled={!isAdmin || isWeekend}
+                    aria-label={
+                      isWeekend
+                        ? `${day.toDateString()}: weekend scheduling is unavailable`
+                        : isAdmin
+                          ? `Create assignment on ${day.toDateString()}`
+                          : day.toDateString()
+                    }
+                    onClick={() => setCreateDate(key)}
+                  >
+                    {day.getDate()}
+                  </button>
+                </div>
 
                 <div className="calendarDayEvents">
-                  {dayEvents.slice(0, 3).map((assignment) => (
+                  {groupCalendarEvents(dayEvents).map((group) => (
+                    <div className="calendarEventGroup" key={group[0].id} data-concurrent={group.length > 1}>
+                    {group.map((assignment) => (
                     <button
                       className={`calendarEvent calendarEvent${visualStatus(assignment)}`}
                       key={assignment.id}
                       type="button"
-                      style={{ "--event-accent": assignmentAccent(assignment.id) } as CSSProperties}
+                      title={`${assignment.title} · ${timeLabel(assignment.startAt)}–${timeLabel(assignment.endAt)}`}
+                      aria-label={`${assignment.title} · ${timeLabel(assignment.startAt)}–${timeLabel(assignment.endAt)} · ${t(statusLabel(visualStatus(assignment)))}`}
                       onClick={() => { setSelectedAssignment(assignment); setShowCancelForm(false); setCancelReason(""); }}
                     >
-                      <i aria-hidden="true" />
                       <time>{timeLabel(assignment.startAt)}</time>
-                      <span><strong>{assignment.title}</strong><small>{statusLabel(visualStatus(assignment))}</small></span>
+                      <span><strong>{assignment.title}</strong><small>{t(statusLabel(visualStatus(assignment)))}</small></span>
                     </button>
+                    ))}
+                    </div>
                   ))}
-                  {dayEvents.length > 3 ? <small>+{dayEvents.length - 3} more</small> : null}
                 </div>
               </div>
             );
           })}
+        </div>
         </div>
       </section>
 
@@ -433,55 +464,55 @@ export default function AssignmentsPage() {
           <section className="assignmentDetailsDialog" role="dialog" aria-modal="true" aria-labelledby="assignment-details-title">
             <header>
               <div>
-                <span className={`assignmentVisualStatus assignmentVisualStatus${visualStatus(selectedAssignment)}`}>{statusLabel(visualStatus(selectedAssignment))}</span>
+                <span className={`assignmentVisualStatus assignmentVisualStatus${visualStatus(selectedAssignment)}`}>{t(statusLabel(visualStatus(selectedAssignment)))}</span>
                 <h2 id="assignment-details-title">{selectedAssignment.title}</h2>
                 <p>{selectedAssignment.site.client.companyName}</p>
               </div>
-              <button type="button" aria-label="Close assignment details" onClick={() => { setSelectedAssignment(null); setShowCancelForm(false); }}>×</button>
+              <button type="button" aria-label={t("Close assignment details")} onClick={() => { setSelectedAssignment(null); setShowCancelForm(false); }}>×</button>
             </header>
 
             <div className="assignmentDetailsGrid">
-              <article><span>Schedule</span><strong>{fullDateTime(selectedAssignment.startAt)}</strong><small>Until {timeLabel(selectedAssignment.endAt)}</small></article>
-              <article><span>Cleaning site</span><strong>{selectedAssignment.site.name}</strong><small>{[selectedAssignment.site.addressLine1, selectedAssignment.site.postalCode, selectedAssignment.site.city].filter(Boolean).join(", ")}</small></article>
-              <article><span>Departure</span><strong>{selectedAssignment.departureAddress ?? "Not recorded"}</strong><small>{selectedAssignment.travelDistanceMeters ? `${(selectedAssignment.travelDistanceMeters / 1000).toFixed(1)} km route` : "Distance not calculated"}</small></article>
-              <article><span>Estimated travel</span><strong>{selectedAssignment.estimatedTravelMinutes ? `${selectedAssignment.estimatedTravelMinutes} minutes` : "Not calculated"}</strong><small>Driving estimate captured when scheduled</small></article>
-              <article><span>Cleaning duration</span><strong>{assignmentDuration(selectedAssignment.startAt, selectedAssignment.endAt)}</strong><small>Based on the scheduled start and end</small></article>
+              <article><span>{t("Schedule")}</span><strong>{fullDateTime(selectedAssignment.startAt)}</strong><small>{t("Until ")}{timeLabel(selectedAssignment.endAt)}</small></article>
+              <article><span>{t("Cleaning site")}</span><strong>{selectedAssignment.site.name}</strong><small>{[selectedAssignment.site.addressLine1, selectedAssignment.site.postalCode, selectedAssignment.site.city].filter(Boolean).join(", ")}</small></article>
+              <article><span>{t("Departure")}</span><strong>{selectedAssignment.departureAddress ?? t("Not recorded")}</strong><small>{selectedAssignment.travelDistanceMeters ? `${(selectedAssignment.travelDistanceMeters / 1000).toFixed(1)} km route` : t("Distance not calculated")}</small></article>
+              <article><span>{t("Estimated travel")}</span><strong>{selectedAssignment.estimatedTravelMinutes ? `${selectedAssignment.estimatedTravelMinutes} minutes` : t("Not calculated")}</strong><small>{t("Driving estimate captured when scheduled")}</small></article>
+              <article><span>{t("Cleaning duration")}</span><strong>{assignmentDuration(selectedAssignment.startAt, selectedAssignment.endAt, locale)}</strong><small>{t("Based on the scheduled start and end")}</small></article>
             </div>
 
             <section className="assignmentDetailsSection">
-              <h3>Assigned employees</h3>
+              <h3>{t("Assigned employees")}</h3>
               {selectedAssignment.employees.length > 0 ? (
-                <div className="assignmentRateList">
+                <div className={`assignmentRateList${isAdmin ? "" : " isEmployeeView"}`}>
                   {selectedAssignment.employees.map(({ employee, agreedHourlyRate, rateOverridden }) => (
                     <div key={employee.id}>
                       <span className="employeeAvatar" aria-hidden="true">{employee.firstName.charAt(0)}{employee.lastName.charAt(0)}</span>
-                      <span><strong>{employee.firstName} {employee.lastName}</strong><small>{employee.isStudent ? "Student employee" : "Employee"}</small></span>
-                      <span><strong>{agreedHourlyRate ? `€${agreedHourlyRate}/h` : "Rate not set"}</strong><small>{rateOverridden ? "Special event rate" : "Default rate snapshot"}</small></span>
+                      <span><strong>{employee.firstName} {employee.lastName}</strong><small>{employee.isStudent ? t("Student employee") : t("Employee")}</small></span>
+                      {isAdmin ? <span><strong>{agreedHourlyRate ? `€${agreedHourlyRate}/h` : t("Rate not set")}</strong><small>{rateOverridden ? t("Special event rate") : t("Default rate snapshot")}</small></span> : null}
                     </div>
                   ))}
                 </div>
-              ) : <p>No employees are assigned yet.</p>}
+              ) : <p>{t("No employees are assigned yet.")}</p>}
             </section>
 
             <section className="assignmentDetailsSection">
-              <h3>Operational details</h3>
-              <p><strong>Instructions:</strong> {selectedAssignment.notes ?? "No additional instructions"}</p>
-              <p><strong>Repetition:</strong> {selectedAssignment.recurringTemplateId ? "Part of a recurring schedule" : "One-time assignment"}</p>
-              <p><strong>Client price:</strong> {selectedAssignment.clientCharge ? `€${Number(selectedAssignment.clientCharge).toFixed(2)}` : "Not recorded"}</p>
+              <h3>{t("Operational details")}</h3>
+              <p><strong>{t("Instructions:")}</strong> {selectedAssignment.notes ?? t("No additional instructions")}</p>
+              <p><strong>{t("Repetition:")}</strong> {selectedAssignment.recurringTemplateId ? t("Part of a recurring schedule") : t("One-time assignment")}</p>
+              {isAdmin ? <p><strong>{t("Client price:")}</strong> {selectedAssignment.clientCharge ? `€${Number(selectedAssignment.clientCharge).toFixed(2)}` : t("Not recorded")}</p> : null}
             </section>
 
             {showCancelForm ? (
               <section className="assignmentCancelPanel">
-                <h3>Choose what should happen</h3>
+                <h3>{t("Choose what should happen")}</h3>
                 <div className="cancellationChoices">
-                  <label className={cancelMode === "single" ? "isSelected" : ""}><input type="radio" name="cancelMode" checked={cancelMode === "single"} onChange={() => setCancelMode("single")} /><span><strong>Cancel this event only</strong><small>Keep it in history with a cancelled status.</small></span></label>
-                  <label className={cancelMode === "series" ? "isSelected" : ""}><input type="radio" name="cancelMode" checked={cancelMode === "series"} disabled={!selectedAssignment.recurringTemplateId} onChange={() => setCancelMode("series")} /><span><strong>Cancel this and the remaining series</strong><small>{selectedAssignment.recurringTemplateId ? "Past occurrences remain unchanged." : "Available only for recurring assignments."}</small></span></label>
-                  <label className={cancelMode === "delete" ? "isSelected isDanger" : "isDanger"}><input type="radio" name="cancelMode" checked={cancelMode === "delete"} onChange={() => setCancelMode("delete")} /><span><strong>Delete this event</strong><small>Permanently removes this occurrence and its reporting data.</small></span></label>
+                  <label className={cancelMode === "single" ? "isSelected" : ""}><input type="radio" name="cancelMode" checked={cancelMode === "single"} onChange={() => setCancelMode("single")} /><span><strong>{t("Cancel this event only")}</strong><small>{t("Keep it in history with a cancelled status.")}</small></span></label>
+                  <label className={cancelMode === "series" ? "isSelected" : ""}><input type="radio" name="cancelMode" checked={cancelMode === "series"} disabled={!selectedAssignment.recurringTemplateId} onChange={() => setCancelMode("series")} /><span><strong>{t("Cancel this and the remaining series")}</strong><small>{selectedAssignment.recurringTemplateId ? t("Past occurrences remain unchanged.") : t("Available only for recurring assignments.")}</small></span></label>
+                  <label className={cancelMode === "delete" ? "isSelected isDanger" : "isDanger"}><input type="radio" name="cancelMode" checked={cancelMode === "delete"} onChange={() => setCancelMode("delete")} /><span><strong>{t("Delete this event")}</strong><small>{t("Permanently removes this occurrence and its reporting data.")}</small></span></label>
                 </div>
-                {cancelMode !== "delete" ? <label>Cancellation reason<textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} rows={3} maxLength={1000} placeholder="Explain why this assignment is cancelled" /></label> : <p className="destructiveWarning">This action cannot be undone.</p>}
+                {cancelMode !== "delete" ? <label>{t("Cancellation reason")}<textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} rows={3} maxLength={1000} placeholder={t("Explain why this assignment is cancelled")} /></label> : <p className="destructiveWarning">{t("This action cannot be undone.")}</p>}
                 <div>
-                  <button type="button" onClick={() => { setShowCancelForm(false); setCancelReason(""); setCancelMode("single"); }}>Keep assignment</button>
-                  <button type="button" disabled={cancelling || (cancelMode !== "delete" && !cancelReason.trim())} onClick={() => void cancelAssignment()}>{cancelling ? "Working..." : cancelMode === "delete" ? "Delete permanently" : "Confirm cancellation"}</button>
+                  <button type="button" onClick={() => { setShowCancelForm(false); setCancelReason(""); setCancelMode("single"); }}>{t("Keep assignment")}</button>
+                  <button type="button" disabled={cancelling || (cancelMode !== "delete" && !cancelReason.trim())} onClick={() => void cancelAssignment()}>{cancelling ? t("Working...") : cancelMode === "delete" ? t("Delete permanently") : t("Confirm cancellation")}</button>
                 </div>
               </section>
             ) : null}
@@ -489,11 +520,11 @@ export default function AssignmentsPage() {
             <footer>
               {isAdmin && selectedAssignment.status !== "CANCELLED" ? (
                 <>
-                  <button className="assignmentEditAction" type="button" onClick={() => { setEditingAssignment(selectedAssignment); setSelectedAssignment(null); }}>Edit assignment</button>
-                  <button className="assignmentCancelAction" type="button" onClick={() => setShowCancelForm(true)}>Cancel assignment</button>
+                  <button className="assignmentEditAction" type="button" onClick={() => { setEditingAssignment(selectedAssignment); setSelectedAssignment(null); }}>{t("Edit assignment")}</button>
+                  <button className="assignmentCancelAction" type="button" onClick={() => setShowCancelForm(true)}>{t("Cancel assignment")}</button>
                 </>
               ) : null}
-              <button type="button" onClick={() => { setSelectedAssignment(null); setShowCancelForm(false); }}>Close details</button>
+              <button type="button" onClick={() => { setSelectedAssignment(null); setShowCancelForm(false); }}>{t("Close details")}</button>
             </footer>
           </section>
         </div>

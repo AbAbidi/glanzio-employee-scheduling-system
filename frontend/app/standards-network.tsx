@@ -1,43 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-const connectedValues = [
-  {
-    number: "01",
-    title: "Known, trusted teams",
-    text: "Every visit is assigned to named people with clear responsibility.",
-  },
-  {
-    number: "02",
-    title: "Plans built around you",
-    text: "Timing, site details, and priorities stay connected in one clear plan.",
-  },
-  {
-    number: "03",
-    title: "Standards you can follow",
-    text: "Completed work and monthly hours remain visible and accountable.",
-  },
-  {
-    number: "04",
-    title: "Support that stays close",
-    text: "Clients, managers, and employees work from the same reliable information.",
-  },
-];
+import BlockRevealText from "./block-reveal-text";
 
 const germanNetworkCopy: Record<string, string> = {
-  "What sets us apart": "Was uns auszeichnet",
-  "Every detail": "Jedes Detail",
-  "stays connected.": "bleibt verbunden.",
-  "Move across the network to see the system respond.": "Bewegen Sie sich über das Netzwerk und erleben Sie, wie das System reagiert.",
-  "Known, trusted teams": "Bekannte, verlässliche Teams",
-  "Every visit is assigned to named people with clear responsibility.": "Jeder Einsatz wird benannten Personen mit klarer Verantwortung zugeordnet.",
-  "Plans built around you": "Pläne, die zu Ihnen passen",
-  "Timing, site details, and priorities stay connected in one clear plan.": "Zeiten, Standortdetails und Prioritäten bleiben in einem klaren Plan verbunden.",
-  "Standards you can follow": "Nachvollziehbare Standards",
-  "Completed work and monthly hours remain visible and accountable.": "Abgeschlossene Arbeiten und Monatsstunden bleiben sichtbar und nachvollziehbar.",
-  "Support that stays close": "Unterstützung, die erreichbar bleibt",
-  "Clients, managers, and employees work from the same reliable information.": "Kunden, Führungskräfte und Mitarbeitende arbeiten mit denselben verlässlichen Informationen.",
+  "What sets Glanzio apart": "Was Glanzio auszeichnet",
+  "Quality in": "Qualität in",
+  "every detail.": "jedem Detail.",
+  "Four principles shape every Glanzio service.":
+    "Vier Grundsätze prägen jeden Einsatz bei Glanzio.",
+  "Glanzio stands for excellent cleaning services at Lake Constance.":
+    "Glanzio steht für exzellente Reinigungs\u00addienst\u00adleistungen am Bodensee.",
+  "Our aim is not only to clean, but to preserve value and create feel-good atmospheres.":
+    "Unser Anspruch ist es, nicht nur zu reinigen, sondern Werte zu erhalten und Wohlfühlatmosphären zu schaffen.",
 };
 
 type Particle = {
@@ -187,6 +162,7 @@ export default function StandardsNetwork({ language }: { language: "de" | "en" }
 
   return (
     <section
+      id="about"
       className={`connectedStandards${isVisible ? " isVisible" : ""}`}
       aria-labelledby="connected-standards-title"
       ref={sectionRef}
@@ -194,23 +170,18 @@ export default function StandardsNetwork({ language }: { language: "de" | "en" }
       <canvas ref={canvasRef} aria-hidden="true" />
       <div className="connectedStandardsContent">
         <div className="connectedStandardsIntro">
-          <p>{t("What sets us apart")}</p>
+          <p>{t("What sets Glanzio apart")}</p>
           <h2 id="connected-standards-title">
-            {t("Every detail")}
+            {t("Quality in")}{" "}
             <br />
-            {t("stays connected.")}
+            {t("every detail.")}
           </h2>
-          <span>{t("Move across the network to see the system respond.")}</span>
+          <span>{t("Four principles shape every Glanzio service.")}</span>
         </div>
-        <div className="connectedStandardsGrid">
-          {connectedValues.map((value) => (
-            <article key={value.number}>
-              <span>{value.number}</span>
-              <h3>{t(value.title)}</h3>
-              <p>{t(value.text)}</p>
-            </article>
-          ))}
-        </div>
+        <blockquote className="connectedStandardsStatement">
+          <BlockRevealText text={t("Glanzio stands for excellent cleaning services at Lake Constance.")} />
+          <BlockRevealText text={t("Our aim is not only to clean, but to preserve value and create feel-good atmospheres.")} />
+        </blockquote>
       </div>
     </section>
   );

@@ -1,13 +1,15 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import {
   useEffect,
-  useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
 import {
-  API_BASE_URL,
+  API_BASE_URL, authenticatedFetch,
   responseMessage,
 } from "../../lib/auth-client";
 import type {
@@ -36,6 +38,7 @@ import type {
   WorkAssignment,
 } from "./types";
 import LocationMap from "./location-map";
+import HolidayWarning from "./holiday-warning";
 
 type CreateAssignmentFormProps = {
   accessToken: string;
@@ -50,26 +53,20 @@ type CreateAssignmentFormProps = {
 
 type SiteMode = "existing" | "new";
 type RepeatMode = "NONE" | "DAILY" | "WEEKLY" | "MONTHLY";
-type SavedSiteSelection = {
-  site: CleaningSite | null;
-  lookupKey: string;
-  coordinates: MapLocation | null;
-};
-type SavedSiteLookup = {
-  key: string;
-  location: MapLocation | null;
-  error: string;
-};
 
 const WEEKDAYS = [
-  { value: 1, label: "M" },
-  { value: 2, label: "T" },
-  { value: 3, label: "W" },
-  { value: 4, label: "T" },
-  { value: 5, label: "F" },
-  { value: 6, label: "S" },
-  { value: 7, label: "S" },
+  { value: 1, label: "M", name: "Monday" },
+  { value: 2, label: "T", name: "Tuesday" },
+  { value: 3, label: "W", name: "Wednesday" },
+  { value: 4, label: "T", name: "Thursday" },
+  { value: 5, label: "F", name: "Friday" },
 ];
+
+function isWeekendDate(value: string) {
+  if (!value) return false;
+  const day = new Date(`${value}T12:00:00`).getDay();
+  return day === 0 || day === 6;
+}
 
 function siteAddress(site: CleaningSite) {
   return [
@@ -93,6 +90,7 @@ export default function CreateAssignmentForm({
   onClose,
   onCreated,
 }: CreateAssignmentFormProps) {
+  const { t } = useDashboardLanguage();
   const [sites, setSites] = useState<CleaningSite[]>([]);
   const [clients, setClients] = useState<ClientListItem[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -100,8 +98,15 @@ export default function CreateAssignmentForm({
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
   const [specialRates, setSpecialRates] = useState<Record<string, string>>({});
   const [siteMode, setSiteMode] = useState<SiteMode>("existing");
-  const [createNewClient, setCreateNewClient] = useState(false);
+  const [newClientId, setNewClientId] = useState("");
+  const [showClientDialog, setShowClientDialog] = useState(false);
+  const clientDialogRef = useRef<HTMLElement>(null);
+  const [clientSubmitting, setClientSubmitting] = useState(false);
+  const [clientError, setClientError] = useState("");
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("NONE");
+  const [repeatInterval, setRepeatInterval] = useState("1");
+  const [repeatUntil, setRepeatUntil] = useState("");
+  const [assignmentDate, setAssignmentDate] = useState(initialDate);
   const [weekdays, setWeekdays] = useState<number[]>(() => {
     const weekday = new Date(`${initialDate}T12:00:00`).getDay();
     return [weekday === 0 ? 7 : weekday];
@@ -110,13 +115,50 @@ export default function CreateAssignmentForm({
     useState<MapLocation | null>(null);
   const [departureLocation, setDepartureLocation] =
     useState<MapLocation | null>(null);
-  const [savedSiteLookup, setSavedSiteLookup] =
-    useState<SavedSiteLookup | null>(null);
+  const [savedSiteLocation, setSavedSiteLocation] =
+    useState<MapLocation | null>(null);
   const [mapRoute, setMapRoute] = useState<RoutePreview | null>(null);
+  const [savedSiteLocationError, setSavedSiteLocationError] = useState("");
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const selectedDateIsWeekend = isWeekendDate(assignmentDate);
+
+  useEffect(() => {
+    if (!showClientDialog) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const dialog = clientDialogRef.current;
+    const getControls = () => Array.from(
+      dialog?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), [tabindex="0"]',
+      ) ?? [],
+    );
+    dialog?.querySelector<HTMLInputElement>('input[name="clientCompanyName"]')?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setShowClientDialog(false);
+      }
+      if (event.key !== "Tab") return;
+      const controls = getControls();
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown, true);
+      previousFocus?.focus();
+    };
+  }, [showClientDialog]);
 
   useEffect(() => {
     let isActive = true;
@@ -126,9 +168,9 @@ export default function CreateAssignmentForm({
         const headers = { Authorization: `Bearer ${accessToken}` };
         const [sitesResponse, clientsResponse, employeesResponse] =
           await Promise.all([
-            fetch(`${API_BASE_URL}/sites?active=true&page=1&pageSize=100`, { headers }),
-            fetch(`${API_BASE_URL}/clients?active=true&page=1&pageSize=100`, { headers }),
-            fetch(`${API_BASE_URL}/employees?active=true&page=1&pageSize=100`, { headers }),
+            authenticatedFetch(`${API_BASE_URL}/sites?active=true&page=1&pageSize=100`, { headers }),
+            authenticatedFetch(`${API_BASE_URL}/clients?active=true&page=1&pageSize=100`, { headers }),
+            authenticatedFetch(`${API_BASE_URL}/employees?active=true&page=1&pageSize=100`, { headers }),
           ]);
 
         for (const response of [sitesResponse, clientsResponse, employeesResponse]) {
@@ -171,68 +213,51 @@ export default function CreateAssignmentForm({
     };
   }, [accessToken]);
 
-  const savedSiteSelection = useMemo<SavedSiteSelection>(() => {
-    if (siteMode !== "existing") {
-      return { site: null, lookupKey: "", coordinates: null };
-    }
-
-    const site =
-      sites.find((candidate) => candidate.id === selectedSiteId) ?? null;
-    if (!site) return { site: null, lookupKey: "", coordinates: null };
-
-    const address = siteAddress(site);
-    const latitude = Number(site.latitude);
-    const longitude = Number(site.longitude);
-    const coordinates =
-      site.latitude !== null &&
-      site.longitude !== null &&
-      Number.isFinite(latitude) &&
-      Number.isFinite(longitude)
-        ? {
-            latitude,
-            longitude,
-            displayName: address,
-            siteName: site.name,
-            addressLine1: site.addressLine1,
-            city: site.city,
-            countryCode: site.countryCode,
-          }
-        : null;
-
-    return {
-      site,
-      lookupKey: `${site.id}:${address}`,
-      coordinates,
-    };
-  }, [selectedSiteId, siteMode, sites]);
-
-  const savedSiteLocation =
-    savedSiteSelection.coordinates ??
-    (savedSiteLookup?.key === savedSiteSelection.lookupKey
-      ? savedSiteLookup.location
-      : null);
-  const savedSiteLocationError =
-    !savedSiteSelection.coordinates &&
-    savedSiteLookup?.key === savedSiteSelection.lookupKey
-      ? savedSiteLookup.error
-      : "";
-
   useEffect(() => {
-    const { site, lookupKey, coordinates } = savedSiteSelection;
-    if (!site || coordinates) return;
-    const savedSite = site;
-
     let active = true;
 
     async function locateSavedSite() {
+      if (siteMode !== "existing") return;
+
+      const site = sites.find((candidate) => candidate.id === selectedSiteId);
+      if (!site) {
+        if (active) setSavedSiteLocation(null);
+        return;
+      }
+
+      const latitude = Number(site.latitude);
+      const longitude = Number(site.longitude);
+      if (
+        site.latitude !== null &&
+        site.longitude !== null &&
+        Number.isFinite(latitude) &&
+        Number.isFinite(longitude)
+      ) {
+        if (!active) return;
+        setSavedSiteLocation({
+          latitude,
+          longitude,
+          displayName: siteAddress(site),
+          siteName: site.name,
+          addressLine1: site.addressLine1,
+          city: site.city,
+          countryCode: site.countryCode,
+        });
+        setSavedSiteLocationError("");
+        return;
+      }
+
+      setSavedSiteLocation(null);
+      setSavedSiteLocationError("");
+
       try {
-        const response = await fetch(`${API_BASE_URL}/calendar/location-search`, {
+        const response = await authenticatedFetch(`${API_BASE_URL}/calendar/location-search`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ query: siteAddress(savedSite) }),
+          body: JSON.stringify({ query: siteAddress(site) }),
         });
 
         if (!response.ok) throw new Error(await responseMessage(response));
@@ -241,27 +266,20 @@ export default function CreateAssignmentForm({
           "latitude" | "longitude" | "displayName"
         >;
         if (!active) return;
-        setSavedSiteLookup({
-          key: lookupKey,
-          location: {
-            ...coordinate,
-            siteName: savedSite.name,
-            addressLine1: savedSite.addressLine1,
-            city: savedSite.city,
-            countryCode: savedSite.countryCode,
-          },
-          error: "",
+        setSavedSiteLocation({
+          ...coordinate,
+          siteName: site.name,
+          addressLine1: site.addressLine1,
+          city: site.city,
+          countryCode: site.countryCode,
         });
       } catch (requestError) {
         if (!active) return;
-        setSavedSiteLookup({
-          key: lookupKey,
-          location: null,
-          error:
-            requestError instanceof Error
-              ? requestError.message
-              : "The saved destination could not be placed on the map.",
-        });
+        setSavedSiteLocationError(
+          requestError instanceof Error
+            ? requestError.message
+            : "The saved destination could not be placed on the map.",
+        );
       }
     }
 
@@ -269,7 +287,7 @@ export default function CreateAssignmentForm({
     return () => {
       active = false;
     };
-  }, [accessToken, savedSiteSelection]);
+  }, [accessToken, selectedSiteId, siteMode, sites]);
 
   function toggleEmployee(employeeId: string) {
     setSelectedEmployeeIds((current) =>
@@ -291,7 +309,7 @@ export default function CreateAssignmentForm({
     origin: MapLocation,
     destination: MapLocation,
   ): Promise<RoutePreview> {
-    const response = await fetch(`${API_BASE_URL}/calendar/route-preview`, {
+    const response = await authenticatedFetch(`${API_BASE_URL}/calendar/route-preview`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -316,30 +334,10 @@ export default function CreateAssignmentForm({
       throw new Error("Search for a location or select one directly on the map.");
     }
 
-    let clientId = inputText(formData, "newClientId");
-    let companyName = clients.find((candidate) => candidate.id === clientId)?.companyName;
-
-    if (createNewClient) {
-      const newCompanyName = inputText(formData, "newClientCompanyName");
-      if (!newCompanyName) throw new Error("Enter the new client's company name.");
-      const response = await fetch(`${API_BASE_URL}/clients`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          companyName: newCompanyName,
-          contactName: inputText(formData, "newClientContactName") || undefined,
-          email: inputText(formData, "newClientEmail") || undefined,
-          phone: inputText(formData, "newClientPhone") || undefined,
-        }),
-      });
-      if (!response.ok) throw new Error(await responseMessage(response));
-      const client = (await response.json()) as Client;
-      clientId = client.id;
-      companyName = client.companyName;
-    }
+    const clientId = inputText(formData, "newClientId");
+    const companyName = clients.find(
+      (candidate) => candidate.id === clientId,
+    )?.companyName;
 
     if (!clientId || !companyName) {
       throw new Error("Select the client for this cleaning site.");
@@ -356,7 +354,7 @@ export default function CreateAssignmentForm({
       requiredEquipment: [],
     };
 
-    const response = await fetch(`${API_BASE_URL}/sites`, {
+    const response = await authenticatedFetch(`${API_BASE_URL}/sites`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -367,6 +365,52 @@ export default function CreateAssignmentForm({
 
     if (!response.ok) throw new Error(await responseMessage(response));
     return (await response.json()) as CleaningSite;
+  }
+
+  async function handleCreateClient(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const companyName = inputText(formData, "clientCompanyName");
+
+    if (!companyName) {
+      setClientError("Enter the new client's company name.");
+      return;
+    }
+
+    setClientSubmitting(true);
+    setClientError("");
+
+    try {
+      const response = await authenticatedFetch(`${API_BASE_URL}/clients`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          companyName,
+          contactName: inputText(formData, "clientContactName") || undefined,
+          email: inputText(formData, "clientEmail") || undefined,
+          phone: inputText(formData, "clientPhone") || undefined,
+        }),
+      });
+
+      if (!response.ok) throw new Error(await responseMessage(response));
+      const client = (await response.json()) as Client;
+      setClients((current) => [{ ...client, _count: { sites: 0 } }, ...current]);
+      setNewClientId(client.id);
+      setShowClientDialog(false);
+      form.reset();
+    } catch (requestError) {
+      setClientError(
+        requestError instanceof Error
+          ? requestError.message
+          : "The client could not be created.",
+      );
+    } finally {
+      setClientSubmitting(false);
+    }
   }
 
   function employeeInputs(): AssignmentEmployeeInput[] {
@@ -391,6 +435,11 @@ export default function CreateAssignmentForm({
 
     if (endAt <= startAt) {
       setError("The end time must be later than the start time.");
+      return;
+    }
+
+    if (isWeekendDate(date)) {
+      setError("Assignments cannot be scheduled on Saturday or Sunday.");
       return;
     }
 
@@ -450,7 +499,7 @@ export default function CreateAssignmentForm({
           endAt: endAt.toISOString(),
           status: "SCHEDULED",
         };
-        const response = await fetch(`${API_BASE_URL}/assignments`, {
+        const response = await authenticatedFetch(`${API_BASE_URL}/assignments`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -477,7 +526,7 @@ export default function CreateAssignmentForm({
             `${inputText(formData, "repeatUntil")}T23:59:59`,
           ).toISOString(),
         };
-        const response = await fetch(`${API_BASE_URL}/recurring-assignments`, {
+        const response = await authenticatedFetch(`${API_BASE_URL}/recurring-assignments`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -505,99 +554,96 @@ export default function CreateAssignmentForm({
     <section className="schedulerDialog" role="dialog" aria-modal="true" aria-labelledby="scheduler-title">
       <header className="schedulerDialogHeader">
         <div>
-          <p>New calendar event</p>
-          <h2 id="scheduler-title">Create assignment</h2>
+          <h2 id="scheduler-title">{t("Create assignment")}</h2>
         </div>
-        <button type="button" aria-label="Close assignment form" onClick={onClose}>×</button>
+        <button type="button" aria-label={t("Close assignment form")} onClick={onClose}>×</button>
       </header>
 
-      {optionsLoading ? <p className="formNotice">Preparing the scheduler...</p> : null}
+      {optionsLoading ? <p className="formNotice">{t("Preparing the scheduler...")}</p> : null}
       {optionsError ? <p className="formMessage formMessageError" role="alert">{optionsError}</p> : null}
 
       <form className="schedulerForm" onSubmit={handleSubmit}>
         <div className="schedulerField schedulerFieldTitle">
           <span aria-hidden="true">✎</span>
-          <input name="title" placeholder="Add a title" maxLength={200} required autoFocus />
+          <input name="title" placeholder={t("Add a title")} maxLength={200} required autoFocus />
         </div>
 
         <div className="schedulerRow">
           <span className="schedulerRowIcon" aria-hidden="true">◷</span>
           <div className="schedulerTimeGrid">
-            <label>Date<input name="assignmentDate" type="date" defaultValue={initialDate} required /></label>
-            <label>Starts<input name="startTime" type="time" defaultValue="09:00" required /></label>
-            <label>Ends<input name="endTime" type="time" defaultValue="10:00" required /></label>
+            <label>{t("Date")}<input name="assignmentDate" type="date" value={assignmentDate} onChange={(event) => { setAssignmentDate(event.target.value); setError(""); }} required /></label>
+            <label>{t("Starts")}<input name="startTime" type="time" defaultValue="09:00" required /></label>
+            <label>{t("Ends")}<input name="endTime" type="time" defaultValue="10:00" required /></label>
+            {selectedDateIsWeekend ? <small className="weekdayPolicyHint isError">{t("Assignments cannot be scheduled on Saturday or Sunday.")}</small> : null}
           </div>
         </div>
 
         <div className="schedulerRow assignmentRevenueRow">
           <span className="schedulerRowIcon" aria-hidden="true">€</span>
           <div className="schedulerSection">
-            <div className="schedulerSectionHeading"><div><strong>Client price</strong><small>The amount the client will pay for each completed occurrence.</small></div></div>
-            <label className="schedulerInputLabel">Amount per assignment (€)<input name="clientCharge" type="number" min="0" step="0.01" placeholder="250.00" required /></label>
+            <div className="schedulerSectionHeading"><div><strong>{t("Assignment price")}</strong><small>{t("The amount the client will pay for each completed occurrence.")}</small></div></div>
+            <label className="schedulerInputLabel">{t("Amount per assignment (€)")}<input name="clientCharge" type="number" min="0" step="0.01" placeholder={t("Amount per assignment (€)")} required /></label>
           </div>
         </div>
 
         <div className="schedulerRow">
           <span className="schedulerRowIcon" aria-hidden="true">↻</span>
           <div className="schedulerRepeat">
-            <label>
-              Repetition
-              <select value={repeatMode} onChange={(event) => setRepeatMode(event.target.value as RepeatMode)}>
-                <option value="NONE">Does not repeat</option>
-                <option value="DAILY">Daily</option>
-                <option value="WEEKLY">Weekly</option>
-                <option value="MONTHLY">Monthly</option>
+            <label>{t("Repetition")}<select value={repeatMode} onChange={(event) => setRepeatMode(event.target.value as RepeatMode)}>
+                <option value="NONE">{t("Does not repeat")}</option>
+                <option value="DAILY">{t("Daily")}</option>
+                <option value="WEEKLY">{t("Weekly")}</option>
+                <option value="MONTHLY">{t("Monthly")}</option>
               </select>
             </label>
 
             {repeatMode !== "NONE" ? (
               <div className="repeatOptions">
-                <label>Every<input name="repeatInterval" type="number" min="1" max="52" defaultValue="1" /></label>
-                <span>{repeatMode === "DAILY" ? "day(s)" : repeatMode === "WEEKLY" ? "week(s)" : "month(s)"}</span>
+                <label>{t("Every")}<input name="repeatInterval" type="number" min="1" max="52" value={repeatInterval} onChange={(event) => setRepeatInterval(event.target.value)} required /></label>
+                <span>{repeatMode === "DAILY" ? t("day(s)") : repeatMode === "WEEKLY" ? t("week(s)") : t("month(s)")}</span>
 
                 {repeatMode === "WEEKLY" ? (
                   <div className="weekdayPicker">
                     {WEEKDAYS.map((day) => (
                       <button
                         className={weekdays.includes(day.value) ? "isSelected" : ""}
+                        aria-label={t(day.name)}
                         key={day.value}
                         type="button"
                         onClick={() => toggleWeekday(day.value)}
                       >
-                        {day.label}
+                        {t(day.name).slice(0, 2)}
                       </button>
                     ))}
                   </div>
                 ) : null}
 
                 <div className="repeatEnding">
-                  <label className="repeatEndDate">
-                    Ends on
-                    <input name="repeatUntil" type="date" min={initialDate} required />
+                  <label className="repeatEndDate">{t("Ends on")}<input name="repeatUntil" type="date" min={assignmentDate} value={repeatUntil} onChange={(event) => setRepeatUntil(event.target.value)} required />
                   </label>
-                  <small>The schedule stops after its final occurrence on this date.</small>
+                  <small>{t("The schedule stops after its final occurrence on this date.")}</small>
                 </div>
               </div>
             ) : null}
           </div>
         </div>
 
+        <HolidayWarning date={assignmentDate} frequency={repeatMode} interval={Number(repeatInterval)} until={repeatUntil} weekdays={weekdays} />
+
         <div className="schedulerRow">
           <span className="schedulerRowIcon" aria-hidden="true">⌖</span>
           <div className="schedulerSection">
             <div className="schedulerSectionHeading">
-              <div><strong>Cleaning destination</strong><small>Choose a saved site or select a new position on the map.</small></div>
+              <div><strong>{t("Cleaning destination")}</strong><small>{t("Choose a saved site or select a new position on the map.")}</small></div>
               <div className="segmentedControl">
-                <button type="button" className={siteMode === "existing" ? "isSelected" : ""} onClick={() => { setSiteMode("existing"); setSavedSiteLookup(null); setMapRoute(null); }}>Saved site</button>
-                <button type="button" className={siteMode === "new" ? "isSelected" : ""} onClick={() => { setSiteMode("new"); setSavedSiteLookup(null); setMapRoute(null); }}>New site</button>
+                <button type="button" className={siteMode === "existing" ? "isSelected" : ""} onClick={() => { setSiteMode("existing"); setMapRoute(null); }}>{t("Saved site")}</button>
+                <button type="button" className={siteMode === "new" ? "isSelected" : ""} onClick={() => { setSiteMode("new"); setSavedSiteLocation(null); setSavedSiteLocationError(""); setMapRoute(null); }}>{t("New site")}</button>
               </div>
             </div>
 
             {siteMode === "existing" ? (
-              <label className="schedulerInputLabel">
-                Site
-                <select value={selectedSiteId} onChange={(event) => { setSelectedSiteId(event.target.value); setSavedSiteLookup(null); setMapRoute(null); }} required>
-                  <option value="">Select a cleaning site</option>
+              <label className="schedulerInputLabel">{t("Site")}<select value={selectedSiteId} onChange={(event) => { setSelectedSiteId(event.target.value); setMapRoute(null); }} required>
+                  <option value="">{t("Select a cleaning site")}</option>
                   {sites.map((site) => (
                     <option key={site.id} value={site.id}>{site.name} · {site.client.companyName} · {site.city}</option>
                   ))}
@@ -606,24 +652,15 @@ export default function CreateAssignmentForm({
             ) : (
               <div className="newSiteMapFields">
                 <div className="newClientChoice">
-                  <label className="schedulerInputLabel">Client<select name="newClientId" disabled={createNewClient} required={siteMode === "new" && !createNewClient}><option value="">Select client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.companyName}</option>)}</select></label>
-                  <button type="button" className={createNewClient ? "isSelected" : ""} onClick={() => setCreateNewClient((current) => !current)}>{createNewClient ? "Use an existing client" : "+ Create a new client"}</button>
+                  <label className="schedulerInputLabel">{t("Client")}<select name="newClientId" value={newClientId} onChange={(event) => setNewClientId(event.target.value)} required={siteMode === "new"}><option value="">{t("Select client")}</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.companyName}</option>)}</select></label>
+                  <button type="button" onClick={() => { setClientError(""); setShowClientDialog(true); }}>{t("+ Create a new client")}</button>
                 </div>
-                {createNewClient ? (
-                  <div className="inlineClientFields">
-                    <label>Company name<input name="newClientCompanyName" maxLength={200} required /></label>
-                    <label>Contact name<input name="newClientContactName" maxLength={200} /></label>
-                    <label>Email<input name="newClientEmail" type="email" maxLength={320} /></label>
-                    <label>Phone<input name="newClientPhone" type="tel" maxLength={30} /></label>
-                    <p>The client is saved first, then this new cleaning site is linked automatically.</p>
-                  </div>
-                ) : null}
               </div>
             )}
 
             <div className="routeMapHeading">
-              <strong>Route positions</strong>
-              <small>Select the starting point first, then the cleaning destination.</small>
+              <strong>{t("Route positions")}</strong>
+              <small>{t("Select the starting point first, then the cleaning destination.")}</small>
             </div>
             {savedSiteLocationError ? <p className="inlineFormError" role="alert">{savedSiteLocationError}</p> : null}
             <LocationMap
@@ -635,15 +672,15 @@ export default function CreateAssignmentForm({
               onDestinationChange={setNewSiteLocation}
               onRouteChange={setMapRoute}
             />
-            <p className="automaticRouteHint">Distance and travel time are calculated automatically and shown in assignment details.</p>
+            <p className="automaticRouteHint">{t("Distance and travel time are calculated automatically and shown in assignment details.")}</p>
           </div>
         </div>
 
         <div className="schedulerRow">
           <span className="schedulerRowIcon" aria-hidden="true">＋</span>
           <div className="schedulerSection">
-            <div className="schedulerSectionHeading"><div><strong>Employees and agreed rates</strong><small>A blank special rate uses and freezes the employee&apos;s normal rate.</small></div></div>
-            <div className="schedulerEmployeeGrid">
+            <div className="schedulerSectionHeading"><div><strong>{t("Employees and agreed rates")}</strong><small>{t("A blank special rate uses and freezes the employee's normal rate.")}</small></div></div>
+            <div className="schedulerEmployeeList">
               {employees.map((employee) => {
                 const selected = selectedEmployeeIds.includes(employee.id);
                 return (
@@ -651,10 +688,10 @@ export default function CreateAssignmentForm({
                     <label>
                       <input type="checkbox" checked={selected} onChange={() => toggleEmployee(employee.id)} />
                       <span className="employeeAvatar" aria-hidden="true">{employee.firstName.charAt(0)}{employee.lastName.charAt(0)}</span>
-                      <span><strong>{employee.firstName} {employee.lastName}</strong><small>{employee.isStudent ? "Student · 80h insight" : `Default ${employee.hourlyRate ? `€${employee.hourlyRate}/h` : "rate not set"}`}</small></span>
+                      <span><strong>{employee.firstName} {employee.lastName}</strong><small>{employee.isStudent ? t("Student · 10h/week · 40h/month") : `Default ${employee.hourlyRate ? `€${employee.hourlyRate}/h` : "rate not set"}`}</small></span>
                     </label>
                     {selected ? (
-                      <label className="specialRate">Special event rate<input type="number" min="0" step="0.01" value={specialRates[employee.id] ?? ""} onChange={(event) => setSpecialRates((current) => ({ ...current, [employee.id]: event.target.value }))} placeholder={employee.hourlyRate ? `Default €${employee.hourlyRate}` : "Optional"} /></label>
+                      <label className="specialRate">{t("Special event rate")}<input type="number" min="0" step="0.01" value={specialRates[employee.id] ?? ""} onChange={(event) => setSpecialRates((current) => ({ ...current, [employee.id]: event.target.value }))} placeholder={employee.hourlyRate ? `Default €${employee.hourlyRate}` : t("Optional")} /></label>
                     ) : null}
                   </article>
                 );
@@ -665,18 +702,61 @@ export default function CreateAssignmentForm({
 
         <div className="schedulerRow">
           <span className="schedulerRowIcon" aria-hidden="true">≡</span>
-          <label className="schedulerInputLabel">Instructions<textarea name="notes" rows={4} maxLength={5000} placeholder="Access instructions, priorities or equipment notes..." /></label>
+          <label className="schedulerInputLabel">{t("Instructions")}<textarea name="notes" rows={4} maxLength={5000} placeholder={t("Access instructions, priorities or equipment notes...")} /></label>
         </div>
 
         {error ? <p className="formMessage formMessageError" role="alert">{error}</p> : null}
 
         <footer className="schedulerActions">
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={submitting || optionsLoading || Boolean(optionsError)}>
-            {submitting ? "Creating..." : repeatMode === "NONE" ? "Create assignment" : "Create recurring schedule"}
+          <button type="button" onClick={onClose}>{t("Cancel")}</button>
+          <button type="submit" disabled={submitting || optionsLoading || Boolean(optionsError) || selectedDateIsWeekend}>
+            {submitting ? t("Creating...") : repeatMode === "NONE" ? t("Create assignment") : t("Create recurring schedule")}
           </button>
         </footer>
       </form>
+
+      {showClientDialog ? (
+        <div
+          className="clientCreatorBackdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowClientDialog(false);
+          }}
+        >
+          <section
+            className="clientCreatorDialog"
+            ref={clientDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="client-creator-title"
+          >
+            <header>
+              <div>
+                <p>{t("New client")}</p>
+                <h3 id="client-creator-title">{t("Create client")}</h3>
+              </div>
+              <button
+                type="button"
+                aria-label={t("Close client form")}
+                onClick={() => setShowClientDialog(false)}
+              >
+                ×
+              </button>
+            </header>
+            <form onSubmit={handleCreateClient}>
+              <label>{t("Company name")}<input name="clientCompanyName" maxLength={200} required autoFocus /></label>
+              <label>{t("Contact name")}<input name="clientContactName" maxLength={200} /></label>
+              <label>{t("Email")}<input name="clientEmail" type="email" maxLength={320} /></label>
+              <label>{t("Phone")}<input name="clientPhone" type="tel" maxLength={30} /></label>
+              <p>{t("The new client will be selected automatically after it is saved.")}</p>
+              {clientError ? <p className="formMessage formMessageError" role="alert">{clientError}</p> : null}
+              <footer>
+                <button type="button" onClick={() => setShowClientDialog(false)}>{t("Cancel")}</button>
+                <button type="submit" disabled={clientSubmitting}>{clientSubmitting ? t("Creating...") : t("Create client")}</button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

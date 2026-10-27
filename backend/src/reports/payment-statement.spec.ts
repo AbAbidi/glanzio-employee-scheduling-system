@@ -1,13 +1,17 @@
-import { calculatePaymentStatement } from './payment-statement';
+import {
+  buildInternalStatementLines,
+  calculatePaymentStatement,
+} from './payment-statement';
 
 function line(id: string, hours: number, rate = 20) {
+  const startAt = new Date(`2026-07-${id.padStart(2, '0')}T08:00:00Z`);
   return {
     id,
     title: `Assignment ${id}`,
     clientName: 'Example client',
     siteName: 'Example site',
-    startAt: new Date(`2026-07-${id.padStart(2, '0')}T08:00:00Z`),
-    endAt: new Date(`2026-07-${id.padStart(2, '0')}T10:00:00Z`),
+    startAt,
+    endAt: new Date(startAt.getTime() + hours * 60 * 60_000),
     durationMinutes: hours * 60,
     hourlyRate: rate,
   };
@@ -36,5 +40,23 @@ describe('calculatePaymentStatement', () => {
     expect(result.totals.payableMinutes).toBe(6000);
     expect(result.totals.deferredMinutes).toBe(0);
     expect(result.totals.grossAmount).toBe(1850);
+  });
+
+  it('projects only the payable portion into the internal PDF rows', () => {
+    const calculation = calculatePaymentStatement(
+      [line('1', 72), line('2', 16)],
+      80 * 60,
+    );
+    const pdfLines = buildInternalStatementLines(calculation.lines);
+
+    expect(pdfLines).toHaveLength(2);
+    expect(pdfLines[0].durationMinutes).toBe(72 * 60);
+    expect(pdfLines[1].durationMinutes).toBe(8 * 60);
+    expect(
+      pdfLines.reduce((total, item) => total + item.durationMinutes, 0),
+    ).toBe(80 * 60);
+    expect(pdfLines[1].endAt.getTime()).toBe(
+      pdfLines[1].startAt.getTime() + 8 * 60 * 60_000,
+    );
   });
 });

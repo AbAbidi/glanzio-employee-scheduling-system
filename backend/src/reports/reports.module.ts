@@ -5,11 +5,17 @@ import { DashboardService } from '../dashboard/dashboard.service';
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
 import { PaymentStatementPdfService } from './payment-statement-pdf.service';
+import { StudentAccountingService } from './student-accounting.service';
 
 @Module({
   imports: [AuthModule],
   controllers: [ReportsController, DashboardController],
-  providers: [ReportsService, DashboardService, PaymentStatementPdfService],
+  providers: [
+    ReportsService,
+    DashboardService,
+    PaymentStatementPdfService,
+    StudentAccountingService,
+  ],
   exports: [ReportsService],
 })
 export class ReportsModule {}

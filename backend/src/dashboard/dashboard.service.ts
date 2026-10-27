@@ -1,9 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DateTime } from 'luxon';
 import {
   AssignmentStatus,
   NotificationType,
+  Prisma,
   UserRole,
 } from '../generated/prisma/client';
 import type { AuthenticatedUser } from '../common/auth/authenticated-user.type';
@@ -11,12 +17,31 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ReportsService } from '../reports/reports.service';
 import { AuditService } from '../audit/audit.service';
 import type { ResetOperationalDataDto } from './dto/reset-operational-data.dto';
+import type { ResetTestWorkspaceDto } from './dto/reset-test-workspace.dto';
+import { STUDENT_POLICY } from '../reports/student-accounting';
+import { AssignmentCompletionService } from '../assignments/assignment-completion.service';
 
 const DASHBOARD_ASSIGNMENT_INCLUDE = {
   site: {
     include: {
       client: {
         select: { id: true, companyName: true },
+      },
+    },
+  },
+} as const;
+
+const EMPLOYEE_DASHBOARD_ASSIGNMENT_SELECT = {
+  id: true,
+  title: true,
+  startAt: true,
+  endAt: true,
+  status: true,
+  site: {
+    select: {
+      name: true,
+      client: {
+        select: { companyName: true },
       },
     },
   },
@@ -42,28 +67,50 @@ export class DashboardService {
     private readonly configService: ConfigService,
     private readonly reportsService: ReportsService,
     private readonly auditService: AuditService,
+    @Optional() private readonly completion?: AssignmentCompletionService,
   ) {}
 
   async get(user: AuthenticatedUser) {
-    return user.role === UserRole.ADMIN
+    await this.completion?.reconcile();
+    return user.role !== UserRole.EMPLOYEE
       ? this.adminDashboard(user)
       : this.employeeDashboard(user);
   }
 
+  async archivedAnalysis(month?: string) {
+    await this.completion?.reconcile();
+    return this.operationsAnalysis(this.todayRange().zone, false, month);
+  }
+
   async resetOperationalDataPreview() {
-    const [assignments, recurringSchedules, notifications] =
-      await this.prisma.$transaction([
-        this.prisma.workAssignment.count(),
-        this.prisma.recurringTemplate.count(),
-        this.prisma.notification.count({
-          where: { type: { in: [...RESET_NOTIFICATION_TYPES] } },
-        }),
-      ]);
+    this.assertTestWorkspaceResetAllowed();
+    const [
+      assignments,
+      recurringSchedules,
+      notifications,
+      studentStatements,
+      studentCreditMovements,
+      storedPdfs,
+    ] = await this.prisma.$transaction([
+      this.prisma.workAssignment.count(),
+      this.prisma.recurringTemplate.count(),
+      this.prisma.notification.count({
+        where: { type: { in: [...RESET_NOTIFICATION_TYPES] } },
+      }),
+      this.prisma.studentStatement.count(),
+      this.prisma.studentCreditMovement.count(),
+      this.prisma.studentStatement.count({
+        where: { pdfBytes: { not: null } },
+      }),
+    ]);
 
     return {
       assignments,
       recurringSchedules,
       notifications,
+      studentStatements,
+      studentCreditMovements,
+      storedPdfs,
       derivedAnalysis: [
         'employee hours',
         'labor cost',
@@ -80,6 +127,7 @@ export class DashboardService {
     _input: ResetOperationalDataDto,
   ) {
     void _input;
+    this.assertTestWorkspaceResetAllowed();
 
     const result = await this.prisma.$transaction(async (transaction) => {
       const assignmentCount = await transaction.workAssignment.count();
@@ -91,6 +139,10 @@ export class DashboardService {
           type: { in: [...RESET_NOTIFICATION_TYPES] },
         },
       });
+      const deletedStudentCreditMovements =
+        await transaction.studentCreditMovement.deleteMany();
+      const deletedStudentStatements =
+        await transaction.studentStatement.deleteMany();
       await transaction.workAssignment.deleteMany();
       await transaction.recurringTemplate.deleteMany();
 
@@ -98,6 +150,8 @@ export class DashboardService {
         deletedAssignments: assignmentCount,
         deletedRecurringSchedules: recurringTemplateCount,
         deletedNotifications: deletedNotifications.count,
+        deletedStudentCreditMovements: deletedStudentCreditMovements.count,
+        deletedStudentStatements: deletedStudentStatements.count,
       };
     });
 
@@ -113,6 +167,172 @@ export class DashboardService {
       ...result,
       preserved: ['administrators', 'employees', 'clients', 'cleaning sites'],
     };
+  }
+
+  async resetTestWorkspacePreview() {
+    this.assertTestWorkspaceResetAllowed();
+
+    const [
+      assignments,
+      recurringSchedules,
+      notifications,
+      invitations,
+      refreshSessions,
+      passwordResetTokens,
+      employees,
+      employeeAccounts,
+      cleaningSites,
+      clients,
+      studentStatements,
+      studentCreditMovements,
+      storedPdfs,
+    ] = await this.prisma.$transaction([
+      this.prisma.workAssignment.count(),
+      this.prisma.recurringTemplate.count(),
+      this.prisma.notification.count(),
+      this.prisma.accountInvitation.count(),
+      this.prisma.refreshSession.count({
+        where: {
+          user: { role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] } },
+        },
+      }),
+      this.prisma.passwordResetToken.count({
+        where: {
+          user: { role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] } },
+        },
+      }),
+      this.prisma.employee.count(),
+      this.prisma.user.count({
+        where: { role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] } },
+      }),
+      this.prisma.cleaningSite.count(),
+      this.prisma.client.count(),
+      this.prisma.studentStatement.count(),
+      this.prisma.studentCreditMovement.count(),
+      this.prisma.studentStatement.count({
+        where: { pdfBytes: { not: null } },
+      }),
+    ]);
+
+    return {
+      assignments,
+      recurringSchedules,
+      notifications,
+      invitations,
+      refreshSessions,
+      passwordResetTokens,
+      employees,
+      employeeAccounts,
+      cleaningSites,
+      clients,
+      studentStatements,
+      studentCreditMovements,
+      storedPdfs,
+      derivedAnalysis: [
+        'employee hours',
+        'labor cost',
+        'client revenue',
+        'travel distance',
+        'production charts',
+      ],
+      preserved: [
+        'administrator accounts',
+        'administrator sessions',
+        'audit history',
+        'database schema and migrations',
+      ],
+    };
+  }
+
+  async resetTestWorkspace(actorUserId: string, _input: ResetTestWorkspaceDto) {
+    void _input;
+    this.assertTestWorkspaceResetAllowed();
+
+    const result = await this.prisma.$transaction(
+      async (transaction) => {
+        const deletedStudentCreditMovements =
+          await transaction.studentCreditMovement.deleteMany();
+        const deletedStudentStatements =
+          await transaction.studentStatement.deleteMany();
+        const deletedNotifications =
+          await transaction.notification.deleteMany();
+        const deletedAssignments =
+          await transaction.workAssignment.deleteMany();
+        const deletedRecurringSchedules =
+          await transaction.recurringTemplate.deleteMany();
+        const deletedInvitations =
+          await transaction.accountInvitation.deleteMany();
+        const deletedRefreshSessions =
+          await transaction.refreshSession.deleteMany({
+            where: {
+              user: { role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] } },
+            },
+          });
+        const deletedPasswordResetTokens =
+          await transaction.passwordResetToken.deleteMany({
+            where: {
+              user: { role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] } },
+            },
+          });
+        const deletedEmployees = await transaction.employee.deleteMany();
+        const deletedEmployeeAccounts = await transaction.user.deleteMany({
+          where: { role: { in: [UserRole.EMPLOYEE, UserRole.MANAGER] } },
+        });
+        const deletedCleaningSites =
+          await transaction.cleaningSite.deleteMany();
+        const deletedClients = await transaction.client.deleteMany();
+
+        const deleted = {
+          deletedAssignments: deletedAssignments.count,
+          deletedRecurringSchedules: deletedRecurringSchedules.count,
+          deletedNotifications: deletedNotifications.count,
+          deletedInvitations: deletedInvitations.count,
+          deletedRefreshSessions: deletedRefreshSessions.count,
+          deletedPasswordResetTokens: deletedPasswordResetTokens.count,
+          deletedEmployees: deletedEmployees.count,
+          deletedEmployeeAccounts: deletedEmployeeAccounts.count,
+          deletedCleaningSites: deletedCleaningSites.count,
+          deletedClients: deletedClients.count,
+          deletedStudentStatements: deletedStudentStatements.count,
+          deletedStudentCreditMovements: deletedStudentCreditMovements.count,
+        };
+
+        await transaction.auditLog.create({
+          data: {
+            actorUserId,
+            action: 'TEST_WORKSPACE_RESET',
+            entityType: 'SystemMaintenance',
+            entityId: 'test-workspace',
+            metadata: deleted,
+          },
+        });
+
+        return deleted;
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+
+    return {
+      ...result,
+      preserved: [
+        'administrator accounts',
+        'administrator sessions',
+        'audit history',
+        'database schema and migrations',
+      ],
+    };
+  }
+
+  private assertTestWorkspaceResetAllowed(): void {
+    const environment = this.configService.get<string>(
+      'NODE_ENV',
+      'development',
+    );
+    if (environment === 'production') {
+      throw new ForbiddenException(
+        'Test-data reset is disabled in production.',
+      );
+    }
   }
 
   private async adminDashboard(user: AuthenticatedUser) {
@@ -158,7 +378,11 @@ export class DashboardService {
     ]);
 
     return {
-      role: UserRole.ADMIN,
+      role: user.role,
+      maintenanceEnabled:
+        user.role === UserRole.ADMIN &&
+        this.configService.get<string>('NODE_ENV', 'development') !==
+          'production',
       date: DateTime.now().setZone(range.zone).toISODate(),
       timeZone: range.zone,
       activeEmployees,
@@ -176,24 +400,30 @@ export class DashboardService {
     };
   }
 
-  private async operationsAnalysis(zone: string) {
+  private async operationsAnalysis(
+    zone: string,
+    active = true,
+    selectedMonth?: string,
+  ) {
     const now = DateTime.now().setZone(zone);
-    const displayedMonths = Array.from({ length: 6 }, (_, index) =>
-      now.minus({ months: 5 - index }).startOf('month'),
-    );
+    const displayedMonths = selectedMonth
+      ? [DateTime.fromISO(`${selectedMonth}-01`, { zone }).startOf('month')]
+      : Array.from({ length: 6 }, (_, index) =>
+          now.minus({ months: 5 - index }).startOf('month'),
+        );
     const firstDisplayedMonth = displayedMonths[0];
+    const lastDisplayedMonth = displayedMonths[displayedMonths.length - 1];
 
     const [assignments, employees] = await Promise.all([
       this.prisma.workAssignment.findMany({
         where: {
-          status: {
-            in: [AssignmentStatus.SCHEDULED, AssignmentStatus.COMPLETED],
-          },
+          status: AssignmentStatus.COMPLETED,
           endAt: { lte: now.toUTC().toJSDate() },
         },
         select: {
           id: true,
           endAt: true,
+          status: true,
           startAt: true,
           travelDistanceMeters: true,
           clientCharge: true,
@@ -201,18 +431,21 @@ export class DashboardService {
             select: {
               employeeId: true,
               agreedHourlyRate: true,
+              employee: { select: { hourlyRate: true } },
             },
           },
         },
         orderBy: { endAt: 'asc' },
       }),
       this.prisma.employee.findMany({
-        where: { active: true },
+        where: { active },
         select: {
           id: true,
           firstName: true,
           lastName: true,
           isStudent: true,
+          createdAt: true,
+          active: true,
         },
         orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       }),
@@ -243,9 +476,9 @@ export class DashboardService {
       let assignmentCost = 0;
 
       for (const link of assignment.employees) {
-        const amount = link.agreedHourlyRate
-          ? (durationMinutes / 60) * Number(link.agreedHourlyRate)
-          : 0;
+        const amount =
+          (durationMinutes / 60) *
+          Number(link.agreedHourlyRate ?? link.employee.hourlyRate ?? 0);
         assignmentCost += amount;
         // Keep the fallback typed so map values remain EmployeeMonthMetrics.
         const byEmployee =
@@ -324,7 +557,7 @@ export class DashboardService {
           ? Math.max(0, availableMinutes - 80 * 60)
           : 0;
 
-        if (cursor >= firstDisplayedMonth) {
+        if (cursor >= firstDisplayedMonth && cursor <= lastDisplayedMonth) {
           results.push({
             month: monthKey,
             employee,
@@ -341,7 +574,61 @@ export class DashboardService {
       return results;
     });
 
+    for (const row of employeeRows) {
+      if (!row.employee.isStudent || row.month < STUDENT_POLICY.effectiveMonth)
+        continue;
+      const { data } = await this.reportsService.studentAccounting.period(
+        row.employee.id,
+        row.month,
+      );
+      // Actual completed work stays live even when the credit statement is closed.
+      row.creditedMinutes = data.creditedMinutes;
+      row.carryInMinutes = data.carryInMinutes;
+      row.carryOutMinutes = data.carryOutMinutes;
+    }
+    const weekStart = now.startOf('week');
+    const weekEnd = weekStart.plus({ weeks: 1 });
+    const weeklyStudents = employees
+      .filter((employee) => employee.isStudent)
+      .map((employee) => {
+        const workedMinutes = assignments.reduce((sum, assignment) => {
+          if (assignment.status !== AssignmentStatus.COMPLETED) return sum;
+          if (
+            !assignment.employees.some(
+              (link) => link.employeeId === employee.id,
+            )
+          )
+            return sum;
+          return (
+            sum +
+            Math.max(
+              0,
+              Math.round(
+                (Math.min(weekEnd.toMillis(), assignment.endAt.getTime()) -
+                  Math.max(
+                    weekStart.toMillis(),
+                    assignment.startAt.getTime(),
+                  )) /
+                  60000,
+              ),
+            )
+          );
+        }, 0);
+        return {
+          employee,
+          workedMinutes,
+          exceededByMinutes: Math.max(
+            0,
+            workedMinutes - STUDENT_POLICY.weeklyMinutes,
+          ),
+        };
+      });
     return {
+      weeklyStudents: {
+        start: weekStart.toISODate(),
+        end: weekEnd.minus({ days: 1 }).toISODate(),
+        items: weeklyStudents,
+      },
       months: displayedMonths.map((monthDate) => {
         const monthKey = monthDate.toFormat('yyyy-MM');
         const summary = assignmentMonths.get(monthKey);
@@ -355,9 +642,6 @@ export class DashboardService {
           ),
           laborCost: Number((summary?.laborCost ?? 0).toFixed(2)),
           revenue: Number((summary?.revenue ?? 0).toFixed(2)),
-          grossMargin: Number(
-            ((summary?.revenue ?? 0) - (summary?.laborCost ?? 0)).toFixed(2),
-          ),
         };
       }),
       employees: employeeRows,
@@ -388,7 +672,7 @@ export class DashboardService {
           startAt: { lt: range.end },
           endAt: { gt: range.start },
         },
-        include: DASHBOARD_ASSIGNMENT_INCLUDE,
+        select: EMPLOYEE_DASHBOARD_ASSIGNMENT_SELECT,
         orderBy: { startAt: 'asc' },
       }),
       this.prisma.workAssignment.findFirst({
@@ -397,7 +681,7 @@ export class DashboardService {
           status: AssignmentStatus.SCHEDULED,
           startAt: { gte: range.end },
         },
-        include: DASHBOARD_ASSIGNMENT_INCLUDE,
+        select: EMPLOYEE_DASHBOARD_ASSIGNMENT_SELECT,
         orderBy: { startAt: 'asc' },
       }),
       this.reportsService.monthly(user, {

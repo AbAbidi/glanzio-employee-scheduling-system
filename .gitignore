@@ -33,6 +33,16 @@ output/
 *.log
 npm-debug.log*
 
+# Private credentials, database backups and unrelated personal document helper
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.backup
+*.bak
+tools/generate_banking_cv.py
+
 # Editors and operating systems
 .vscode/
 .idea/

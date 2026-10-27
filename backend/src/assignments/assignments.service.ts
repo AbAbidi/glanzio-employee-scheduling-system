@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DateTime } from 'luxon';
@@ -26,6 +27,8 @@ import type { CreateRecurringAssignmentDto } from './dto/create-recurring-assign
 import type { SetRecurringStatusDto } from './dto/set-recurring-status.dto';
 import type { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import type { UpdateAssignmentRecurrenceDto } from './dto/update-assignment-recurrence.dto';
+import { STUDENT_POLICY } from '../reports/student-accounting';
+import { AssignmentCompletionService } from './assignment-completion.service';
 
 const ASSIGNMENT_INCLUDE = {
   recurringTemplate: {
@@ -66,6 +69,10 @@ const ASSIGNMENT_INCLUDE = {
   },
 } as const;
 
+type AssignmentWithDetails = Prisma.WorkAssignmentGetPayload<{
+  include: typeof ASSIGNMENT_INCLUDE;
+}>;
+
 type Occurrence = {
   startAt: Date;
   endAt: Date;
@@ -83,12 +90,14 @@ export class AssignmentsService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly auditService: AuditService,
+    @Optional() private readonly completion?: AssignmentCompletionService,
   ) {}
 
   async create(actorUserId: string, input: CreateAssignmentDto) {
     const startAt = new Date(input.startAt);
     const endAt = new Date(input.endAt);
     this.assertValidRange(startAt, endAt);
+    this.assertWorkingDayRange(startAt, endAt);
 
     const employeeLinks = await this.buildEmployeeLinks(
       input.employeeIds,
@@ -136,6 +145,7 @@ export class AssignmentsService {
       assignment.id,
       employeeIds,
       startAt,
+      endAt,
     );
     await this.auditService.record({
       actorUserId,
@@ -149,6 +159,7 @@ export class AssignmentsService {
   }
 
   async list(user: AuthenticatedUser, query: AssignmentQueryDto) {
+    await this.completion?.reconcile();
     const employeeId =
       user.role === UserRole.EMPLOYEE
         ? await this.employeeIdForUser(user.id)
@@ -163,6 +174,11 @@ export class AssignmentsService {
     const where: Prisma.WorkAssignmentWhereInput = {
       status: query.status,
       siteId: query.siteId,
+      site: { active: true, client: { active: true } },
+      OR: [
+        { employees: { none: {} } },
+        { employees: { some: { employee: { active: true } } } },
+      ],
       employees: employeeId
         ? {
             some: { employeeId },
@@ -177,7 +193,7 @@ export class AssignmentsService {
       this.prisma.workAssignment.findMany({
         where,
         include: ASSIGNMENT_INCLUDE,
-        orderBy: { startAt: 'asc' },
+        orderBy: [{ startAt: 'asc' }, { id: 'asc' }],
         skip,
         take: query.pageSize,
       }),
@@ -185,7 +201,15 @@ export class AssignmentsService {
     ]);
 
     return {
-      items,
+      items:
+        user.role === UserRole.EMPLOYEE
+          ? items.map((assignment) => this.employeeAssignmentView(assignment))
+          : items.map((assignment) => ({
+              ...assignment,
+              employees: assignment.employees.filter(
+                (link) => link.employee.active,
+              ),
+            })),
       page: query.page,
       pageSize: query.pageSize,
       total,
@@ -194,6 +218,7 @@ export class AssignmentsService {
   }
 
   async findOne(user: AuthenticatedUser, id: string) {
+    await this.completion?.reconcile();
     const assignment = await this.prisma.workAssignment.findUnique({
       where: { id },
       include: ASSIGNMENT_INCLUDE,
@@ -214,9 +239,18 @@ export class AssignmentsService {
           'Employees may only view their own assignments.',
         );
       }
+
+      return this.employeeAssignmentView(assignment);
     }
 
-    return assignment;
+    return user.role === UserRole.MANAGER
+      ? {
+          ...assignment,
+          employees: assignment.employees.filter(
+            (link) => link.employee.active,
+          ),
+        }
+      : assignment;
   }
 
   async update(actorUserId: string, id: string, input: UpdateAssignmentDto) {
@@ -264,6 +298,7 @@ export class AssignmentsService {
     );
 
     this.assertValidRange(startAt, endAt);
+    this.assertWorkingDayRange(startAt, endAt);
 
     if (input.siteId) {
       await this.assertActiveSite(input.siteId);
@@ -276,32 +311,40 @@ export class AssignmentsService {
       await this.assertNoConflicts(employeeIds, startAt, endAt, id);
     }
 
-    const assignment = await this.prisma.workAssignment.update({
-      where: { id },
-      data: {
-        siteId: input.siteId,
-        title: input.title?.trim(),
-        startAt: input.startAt ? startAt : undefined,
-        endAt: input.endAt ? endAt : undefined,
-        status: input.status,
-        notes: input.notes?.trim(),
-        departureAddress: input.departureAddress?.trim(),
-        departureLatitude: input.departureLatitude,
-        departureLongitude: input.departureLongitude,
-        travelDistanceMeters: input.travelDistanceMeters,
-        estimatedTravelMinutes: input.estimatedTravelMinutes,
-        clientCharge: input.clientCharge,
-        routeCalculatedAt:
-          input.travelDistanceMeters !== undefined ? new Date() : undefined,
-        updatedById: actorUserId,
-        employees: employeesChanged
-          ? {
-              deleteMany: {},
-              create: employeeLinks,
-            }
-          : undefined,
-      },
-      include: ASSIGNMENT_INCLUDE,
+    const assignment = await this.prisma.$transaction(async (transaction) => {
+      // Remove replaced links before changing time, so the previous team does
+      // not temporarily occupy the new time. Both changes roll back together.
+      if (employeesChanged) {
+        await transaction.assignmentEmployee.deleteMany({
+          where: { assignmentId: id },
+        });
+      }
+      return transaction.workAssignment.update({
+        where: { id },
+        data: {
+          siteId: input.siteId,
+          title: input.title?.trim(),
+          startAt: input.startAt ? startAt : undefined,
+          endAt: input.endAt ? endAt : undefined,
+          status: input.status,
+          notes: input.notes?.trim(),
+          departureAddress: input.departureAddress?.trim(),
+          departureLatitude: input.departureLatitude,
+          departureLongitude: input.departureLongitude,
+          travelDistanceMeters: input.travelDistanceMeters,
+          estimatedTravelMinutes: input.estimatedTravelMinutes,
+          clientCharge: input.clientCharge,
+          routeCalculatedAt:
+            input.travelDistanceMeters !== undefined ? new Date() : undefined,
+          updatedById: actorUserId,
+          employees: employeesChanged
+            ? {
+                create: employeeLinks,
+              }
+            : undefined,
+        },
+        include: ASSIGNMENT_INCLUDE,
+      });
     });
 
     await this.notifyAssignment(
@@ -315,6 +358,7 @@ export class AssignmentsService {
       assignment.id,
       employeeIds,
       startAt,
+      endAt,
     );
     await this.auditService.record({
       actorUserId,
@@ -375,6 +419,7 @@ export class AssignmentsService {
     id: string,
     input: UpdateAssignmentRecurrenceDto,
   ) {
+    await this.completion?.reconcile();
     const existing = await this.prisma.workAssignment.findUnique({
       where: { id },
       include: {
@@ -395,6 +440,7 @@ export class AssignmentsService {
     const durationMinutes = Math.round(
       (existing.endAt.getTime() - existing.startAt.getTime()) / 60000,
     );
+    this.assertWorkingDayRange(existing.startAt, existing.endAt);
     const recurrenceInput: CreateRecurringAssignmentDto = {
       siteId: existing.siteId,
       title: existing.title,
@@ -408,8 +454,24 @@ export class AssignmentsService {
       employees: [],
       clientCharge: Number(existing.clientCharge ?? 0),
     };
+    // Completed/cancelled occurrences are history, not disposable template rows.
+    const preserved = existing.recurringTemplateId
+      ? await this.prisma.workAssignment.findMany({
+          where: {
+            recurringTemplateId: existing.recurringTemplateId,
+            status: { not: AssignmentStatus.SCHEDULED },
+          },
+          select: { startAt: true, endAt: true },
+        })
+      : [];
     const occurrences = this.generateOccurrences(recurrenceInput).filter(
-      (occurrence) => occurrence.startAt > existing.startAt,
+      (occurrence) =>
+        occurrence.startAt > existing.startAt &&
+        !preserved.some(
+          (visit) =>
+            visit.startAt < occurrence.endAt &&
+            visit.endAt > occurrence.startAt,
+        ),
     );
     const employeeIds = existing.employees.map((link) => link.employeeId);
 
@@ -490,6 +552,7 @@ export class AssignmentsService {
           where: {
             recurringTemplateId: existing.recurringTemplateId,
             startAt: { gt: existing.startAt },
+            status: AssignmentStatus.SCHEDULED,
           },
         });
       } else {
@@ -562,6 +625,7 @@ export class AssignmentsService {
     id: string,
     input: CancelAssignmentDto,
   ) {
+    await this.completion?.reconcile();
     const existing = await this.prisma.workAssignment.findUnique({
       where: { id },
       include: { employees: true },
@@ -582,7 +646,7 @@ export class AssignmentsService {
         where: {
           recurringTemplateId: existing.recurringTemplateId!,
           OR: [{ endAt: { gt: new Date() } }, { id }],
-          status: { not: AssignmentStatus.CANCELLED },
+          status: AssignmentStatus.SCHEDULED,
         },
         select: {
           id: true,
@@ -766,15 +830,28 @@ export class AssignmentsService {
       },
     });
 
+    const studentWarnings = result.assignments.length
+      ? await this.createStudentWarnings(
+          result.assignments[0].id,
+          employeeIds,
+          result.assignments[0].startAt,
+          result.assignments[result.assignments.length - 1].endAt,
+        )
+      : [];
     return {
       ...result.template,
+      studentWarnings,
       generatedAssignmentCount: result.assignments.length,
       assignments: result.assignments,
     };
   }
 
-  async listRecurring() {
+  async listRecurring(actor?: AuthenticatedUser) {
     return this.prisma.recurringTemplate.findMany({
+      where:
+        actor?.role === UserRole.MANAGER
+          ? { site: { active: true, client: { active: true } } }
+          : undefined,
       orderBy: { createdAt: 'desc' },
       include: {
         site: {
@@ -785,6 +862,10 @@ export class AssignmentsService {
           },
         },
         employees: {
+          where:
+            actor?.role === UserRole.MANAGER
+              ? { employee: { active: true } }
+              : undefined,
           include: {
             employee: {
               select: {
@@ -984,6 +1065,15 @@ export class AssignmentsService {
       );
     }
 
+    if (
+      input.frequency === RecurrenceFrequency.WEEKLY &&
+      input.daysOfWeek.some((weekday) => weekday === 6 || weekday === 7)
+    ) {
+      throw new BadRequestException(
+        'Weekly assignments may only repeat from Monday to Friday.',
+      );
+    }
+
     const zone = this.configService.get<string>(
       'SYSTEM_TIME_ZONE',
       'Europe/Paris',
@@ -998,6 +1088,9 @@ export class AssignmentsService {
     if (!first.isValid || (until && !until.isValid)) {
       throw new BadRequestException('The recurrence dates are invalid.');
     }
+
+    const firstOccurrence = this.occurrence(first, input.durationMinutes);
+    this.assertWorkingDayRange(firstOccurrence.startAt, firstOccurrence.endAt);
 
     if (until && until < first) {
       throw new BadRequestException('untilAt must be after firstStartAt.');
@@ -1031,7 +1124,10 @@ export class AssignmentsService {
           candidate >= first &&
           (!until || candidate <= until)
         ) {
-          occurrences.push(this.occurrence(candidate, input.durationMinutes));
+          const occurrence = this.occurrence(candidate, input.durationMinutes);
+          if (this.isWorkingDayRange(occurrence.startAt, occurrence.endAt)) {
+            occurrences.push(occurrence);
+          }
         }
 
         day = day.plus({ days: 1 });
@@ -1043,24 +1139,35 @@ export class AssignmentsService {
       }
     } else if (input.frequency === RecurrenceFrequency.MONTHLY) {
       let monthOffset = 0;
+      let safetyMonths = 0;
 
-      while (occurrences.length < targetCount) {
+      while (occurrences.length < targetCount && safetyMonths < 3660) {
         const candidate = first.plus({ months: monthOffset });
         if (until && candidate > until) {
           break;
         }
-        occurrences.push(this.occurrence(candidate, input.durationMinutes));
+        const occurrence = this.occurrence(candidate, input.durationMinutes);
+        if (this.isWorkingDayRange(occurrence.startAt, occurrence.endAt)) {
+          occurrences.push(occurrence);
+        }
         monthOffset += input.interval;
+        safetyMonths += 1;
       }
     } else {
       let candidate = first;
+      let safetyDays = 0;
 
       while (
         occurrences.length < targetCount &&
-        (!until || candidate <= until)
+        (!until || candidate <= until) &&
+        safetyDays < 3660
       ) {
-        occurrences.push(this.occurrence(candidate, input.durationMinutes));
+        const occurrence = this.occurrence(candidate, input.durationMinutes);
+        if (this.isWorkingDayRange(occurrence.startAt, occurrence.endAt)) {
+          occurrences.push(occurrence);
+        }
         candidate = candidate.plus({ days: input.interval });
+        safetyDays += 1;
       }
     }
 
@@ -1090,6 +1197,7 @@ export class AssignmentsService {
     assignmentId: string,
     employeeIds: string[],
     assignmentStart: Date,
+    assignmentEnd = new Date(assignmentStart.getTime() + 60000),
   ) {
     if (!employeeIds.length) {
       return [];
@@ -1100,15 +1208,42 @@ export class AssignmentsService {
       'Europe/Paris',
     );
     const month = DateTime.fromJSDate(assignmentStart, { zone });
-    const monthStart = month.startOf('month').toUTC().toJSDate();
-    const monthEnd = month
-      .plus({ months: 1 })
-      .startOf('month')
-      .toUTC()
-      .toJSDate();
-    const limitMinutes = this.configService.get<number>(
-      'STUDENT_MONTHLY_LIMIT_MINUTES',
-      4800,
+    const windows = new Map<
+      string,
+      { start: DateTime; end: DateTime; limit: number; period: string }
+    >();
+    const finalDay = DateTime.fromJSDate(
+      new Date(assignmentEnd.getTime() - 1),
+      { zone },
+    );
+    for (
+      let day = month.startOf('day');
+      day <= finalDay;
+      day = day.plus({ days: 1 })
+    ) {
+      const key = day.toFormat('yyyy-MM');
+      const effective = key >= STUDENT_POLICY.effectiveMonth;
+      windows.set(`month-${key}`, {
+        start: day.startOf('month'),
+        end: day.startOf('month').plus({ months: 1 }),
+        limit: effective ? STUDENT_POLICY.monthlyMinutes : 4800,
+        period: `month ${key}`,
+      });
+      if (effective) {
+        const week = day.startOf('week');
+        windows.set(`week-${week.toISODate()}`, {
+          start: week,
+          end: week.plus({ weeks: 1 }),
+          limit: STUDENT_POLICY.weeklyMinutes,
+          period: `week ${week.toISODate()}`,
+        });
+      }
+    }
+    const queryStart = new Date(
+      Math.min(...[...windows.values()].map((item) => item.start.toMillis())),
+    );
+    const queryEnd = new Date(
+      Math.max(...[...windows.values()].map((item) => item.end.toMillis())),
     );
     const students = await this.prisma.employee.findMany({
       where: {
@@ -1130,6 +1265,7 @@ export class AssignmentsService {
       limitMinutes: number;
       exceededByMinutes: number;
       assignmentAllowed: boolean;
+      period: string;
     }> = [];
 
     for (const student of students) {
@@ -1140,8 +1276,8 @@ export class AssignmentsService {
             status: {
               in: [AssignmentStatus.SCHEDULED, AssignmentStatus.COMPLETED],
             },
-            startAt: { lt: monthEnd },
-            endAt: { gt: monthStart },
+            startAt: { lt: queryEnd },
+            endAt: { gt: queryStart },
           },
         },
         include: {
@@ -1150,52 +1286,77 @@ export class AssignmentsService {
           },
         },
       });
-      const plannedMinutes = Math.round(
-        links.reduce((total, link) => {
-          const start = Math.max(
-            link.assignment.startAt.getTime(),
-            monthStart.getTime(),
-          );
-          const end = Math.min(
-            link.assignment.endAt.getTime(),
-            monthEnd.getTime(),
-          );
-          return total + Math.max(0, end - start) / 60_000;
-        }, 0),
+      for (const window of windows.values()) {
+        const limitMinutes = window.limit;
+        const plannedMinutes = Math.round(
+          links.reduce((total, link) => {
+            const start = Math.max(
+              link.assignment.startAt.getTime(),
+              window.start.toMillis(),
+            );
+            const end = Math.min(
+              link.assignment.endAt.getTime(),
+              window.end.toMillis(),
+            );
+            return total + Math.max(0, end - start) / 60_000;
+          }, 0),
+        );
+
+        if (plannedMinutes > limitMinutes) {
+          const warning = {
+            employeeId: student.id,
+            employeeName: `${student.firstName} ${student.lastName}`,
+            month: month.toFormat('yyyy-MM'),
+            plannedMinutes,
+            limitMinutes,
+            exceededByMinutes: plannedMinutes - limitMinutes,
+            assignmentAllowed: true,
+            period: window.period,
+          };
+          warnings.push(warning);
+        }
+      }
+      const ownWarnings = warnings.filter(
+        (warning) => warning.employeeId === student.id,
       );
+      const existingWarning = await this.prisma.notification.findFirst({
+        where: {
+          userId: student.userId,
+          assignmentId,
+          type: NotificationType.STUDENT_HOUR_WARNING,
+        },
+        select: { id: true },
+      });
 
-      if (plannedMinutes > limitMinutes) {
-        const warning = {
-          employeeId: student.id,
-          employeeName: `${student.firstName} ${student.lastName}`,
-          month: month.toFormat('yyyy-MM'),
-          plannedMinutes,
-          limitMinutes,
-          exceededByMinutes: plannedMinutes - limitMinutes,
-          assignmentAllowed: true,
+      if (ownWarnings.length) {
+        const data = {
+          title: 'Student planned-hour warning',
+          message: ownWarnings
+            .map(
+              (warning) =>
+                `${warning.employeeName}: ${warning.plannedMinutes} planned minutes in ${warning.period}; threshold ${warning.limitMinutes} minutes. Assignment allowed.`,
+            )
+            .join(' '),
         };
-        warnings.push(warning);
-
-        const existingWarning = await this.prisma.notification.findFirst({
-          where: {
-            userId: student.userId,
-            assignmentId,
-            type: NotificationType.STUDENT_HOUR_WARNING,
-          },
-          select: { id: true },
-        });
-
-        if (!existingWarning) {
+        if (existingWarning)
+          await this.prisma.notification.update({
+            where: { id: existingWarning.id },
+            data,
+          });
+        else {
           await this.prisma.notification.create({
             data: {
               userId: student.userId,
               assignmentId,
               type: NotificationType.STUDENT_HOUR_WARNING,
-              title: 'Student planned-hour warning',
-              message: `${warning.employeeName} has ${plannedMinutes} planned minutes in ${warning.month}, above the ${limitMinutes}-minute warning threshold.`,
+              ...data,
             },
           });
         }
+      } else if (existingWarning) {
+        await this.prisma.notification.delete({
+          where: { id: existingWarning.id },
+        });
       }
     }
 
@@ -1273,6 +1434,32 @@ export class AssignmentsService {
     return employee.id;
   }
 
+  private employeeAssignmentView(assignment: AssignmentWithDetails) {
+    const { clientCharge, ...safeAssignment } = assignment;
+    void clientCharge;
+
+    return {
+      ...safeAssignment,
+      employees: assignment.employees.map((link) => {
+        const { agreedHourlyRate, rateOverridden, employee, ...safeLink } =
+          link;
+        void agreedHourlyRate;
+        void rateOverridden;
+
+        return {
+          ...safeLink,
+          employee: {
+            id: employee.id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            active: employee.active,
+            isStudent: employee.isStudent,
+          },
+        };
+      }),
+    };
+  }
+
   private assertValidRange(startAt: Date, endAt: Date): void {
     if (
       Number.isNaN(startAt.getTime()) ||
@@ -1281,6 +1468,35 @@ export class AssignmentsService {
     ) {
       throw new BadRequestException('endAt must be after startAt.');
     }
+  }
+
+  private assertWorkingDayRange(startAt: Date, endAt: Date): void {
+    if (!this.isWorkingDayRange(startAt, endAt)) {
+      throw new BadRequestException(
+        'Assignments cannot be scheduled on Saturday or Sunday. Choose a time from Monday to Friday.',
+      );
+    }
+  }
+
+  private isWorkingDayRange(startAt: Date, endAt: Date): boolean {
+    const zone = this.configService.get<string>(
+      'SYSTEM_TIME_ZONE',
+      'Europe/Paris',
+    );
+    let day = DateTime.fromJSDate(startAt, { zone }).startOf('day');
+    const finalOccupiedDay = DateTime.fromJSDate(
+      new Date(endAt.getTime() - 1),
+      { zone },
+    ).startOf('day');
+
+    while (day <= finalOccupiedDay) {
+      if (day.weekday === 6 || day.weekday === 7) {
+        return false;
+      }
+      day = day.plus({ days: 1 });
+    }
+
+    return true;
   }
 
   private occupiesSchedule(status: AssignmentStatus): boolean {

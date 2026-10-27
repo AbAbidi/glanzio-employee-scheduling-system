@@ -1,9 +1,11 @@
 "use client";
 
+import { useDashboardLanguage } from "../dashboard-language";
+
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
-  API_BASE_URL,
+  API_BASE_URL, authenticatedFetch,
   responseMessage,
   restoreSession,
   type AuthenticationResult,
@@ -12,7 +14,9 @@ import DashboardShellHeader from "../dashboard-shell-header";
 import CreateEmployeeForm from "./create-employee-form";
 import EmployeeAnalysisDialog from "./employee-analysis-dialog";
 import EmployeeEditDialog from "./employee-edit-dialog";
+import EmployeeAccessControl from "./employee-access-control";
 import InvitationLinkPanel from "./invitation-link-panel";
+import StudentCreditPanel from "./student-credit-panel";
 import type {
   Employee,
   EmployeeListResponse,
@@ -27,6 +31,7 @@ function currentMonthValue() {
 }
 
 export default function EmployeesPage() {
+  const { t } = useDashboardLanguage();
   const [access, setAccess] = useState<AccessState>("checking");
   const [session, setSession] = useState<AuthenticationResult | null>(null);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -48,12 +53,13 @@ export default function EmployeesPage() {
   const [deleting, setDeleting] = useState(false);
   const [statementMonth, setStatementMonth] = useState(currentMonthValue);
   const [exportingStatement, setExportingStatement] = useState("");
+  const [creditEmployee, setCreditEmployee] = useState<Employee | null>(null);
 
   const filteredEmployees = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) return employees;
     return employees.filter((employee) =>
-      `${employee.firstName} ${employee.lastName} ${employee.user.email} ${employee.phone ?? ""}`
+      `${employee.firstName} ${employee.lastName} ${employee.loginCode ?? ""} ${employee.user.email ?? ""} ${employee.phone ?? ""}`
         .toLowerCase()
         .includes(query),
     );
@@ -83,14 +89,14 @@ export default function EmployeesPage() {
           setAccess("signed-out");
           return;
         }
-        if (currentSession.user.role !== "ADMIN") {
+        if (currentSession.user.role === "EMPLOYEE") {
           setAccess("forbidden");
           return;
         }
 
         setSession(currentSession);
         setAccess("allowed");
-        const response = await fetch(
+        const response = await authenticatedFetch(
           `${API_BASE_URL}/employees?active=true&page=1&pageSize=100`,
           {
             headers: { Authorization: `Bearer ${currentSession.accessToken}` },
@@ -126,7 +132,7 @@ export default function EmployeesPage() {
     setResettingEmployeeId(employee.id);
     setError("");
     try {
-      const response = await fetch(
+      const response = await authenticatedFetch(
         `${API_BASE_URL}/employees/${employee.id}/invitation`,
         {
           method: "POST",
@@ -155,7 +161,7 @@ export default function EmployeesPage() {
     setDeleting(true);
     setError("");
     try {
-      const response = await fetch(
+      const response = await authenticatedFetch(
         `${API_BASE_URL}/employees/${employeeToDelete.id}`,
         {
           method: "DELETE",
@@ -187,7 +193,7 @@ export default function EmployeesPage() {
     try {
       const parameters = new URLSearchParams({ month: statementMonth });
       if (employee) parameters.set("employeeId", employee.id);
-      const response = await fetch(
+      const response = await authenticatedFetch(
         `${API_BASE_URL}/reports/monthly-payment-statement?${parameters.toString()}`,
         { headers: { Authorization: `Bearer ${session.accessToken}` } },
       );
@@ -197,7 +203,7 @@ export default function EmployeesPage() {
       const disposition = response.headers.get("Content-Disposition") ?? "";
       const filename =
         disposition.match(/filename="?([^";]+)"?/i)?.[1] ??
-        `clarity-clean-payment-statements-${statementMonth}.pdf`;
+        `glanzio-stundenzettel-${statementMonth}.pdf`;
       const link = document.createElement("a");
       link.href = downloadUrl;
       link.download = filename;
@@ -218,22 +224,22 @@ export default function EmployeesPage() {
 
   if (access === "checking")
     return (
-      <main className="managementGate">Preparing employee operations...</main>
+      <main className="managementGate">{t("Preparing employee operations...")}</main>
     );
   if (access === "signed-out")
     return (
       <main className="managementGate">
-        <h1>Sign in required</h1>
-        <p>You must sign in before opening employee management.</p>
-        <Link href="/login">Go to sign in</Link>
+        <h1>{t("Sign in required")}</h1>
+        <p>{t("You must sign in before opening employee management.")}</p>
+        <Link href="/login">{t("Go to sign in")}</Link>
       </main>
     );
   if (access === "forbidden")
     return (
       <main className="managementGate">
-        <h1>Administrator access required</h1>
-        <p>Employee accounts cannot open this page.</p>
-        <Link href="/dashboard">Return to dashboard</Link>
+        <h1>{t("Administrator access required")}</h1>
+        <p>{t("Employee accounts cannot open this page.")}</p>
+        <Link href="/dashboard">{t("Return to dashboard")}</Link>
       </main>
     );
 
@@ -246,33 +252,30 @@ export default function EmployeesPage() {
 
   return (
     <main className="employeeOpsPage">
-      <DashboardShellHeader email={session?.user.email ?? ""} role="ADMIN" />
+      <DashboardShellHeader email={session?.user.email ?? ""} role={session?.user.role ?? "EMPLOYEE"} />
 
       <section className="employeeOpsHero">
         <div>
-          <p>People intelligence</p>
-          <h1>Your team, clearly organised.</h1>
-          <span>
-            Invite, manage and understand the real cost of completed work.
-          </span>
+          <h1>{t("Your team, clearly organised.")}</h1>
+          <span>{t("Invite, manage and understand the real cost of completed work.")}</span>
         </div>
         <div className="employeeQuickMetrics">
           <article>
-            <span>Active team</span>
+            <span>{t("Active team")}</span>
             <strong>{total}</strong>
           </article>
           <article>
-            <span>Awaiting invite</span>
+            <span>{t("Awaiting invite")}</span>
             <strong>{invitedCount}</strong>
           </article>
           <article>
-            <span>Student employees</span>
+            <span>{t("Student employees")}</span>
             <strong>{studentCount}</strong>
           </article>
         </div>
         <div className="employeeStatementExport">
           <label>
-            <span>Payment statement month</span>
+          <span>{t("Internal settlement month")}</span>
             <input
               type="month"
               value={statementMonth}
@@ -285,13 +288,9 @@ export default function EmployeesPage() {
             onClick={() => void exportPaymentStatement()}
           >
             {exportingStatement === "all"
-              ? "Preparing PDF..."
-              : "Export all employee statements"}
+              ? t("Preparing PDF...")
+              : t("Export all internal statements")}
           </button>
-          <small>
-            One secure PDF, with a separate signed-and-stamped statement for
-            each employee.
-          </small>
         </div>
       </section>
 
@@ -309,14 +308,15 @@ export default function EmployeesPage() {
       <section className="employeeOpsLayout">
         <aside className="employeeInviteBlock">
           <div className="employeeBlockHeading">
-            <span>01</span>
+            <span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M15 20H4v-2a5 5 0 0 1 10 0v2M18 8v6m-3-3h6" /><circle cx="9" cy="7" r="3" /></svg></span>
             <div>
-              <p>Invitation</p>
-              <h2>Add a team member</h2>
+              <p>{t("Invitation")}</p>
+              <h2>{t("Add a team member")}</h2>
             </div>
           </div>
           {session ? (
             <CreateEmployeeForm
+              canCreateManager={session.user.role === "ADMIN"}
               accessToken={session.accessToken}
               onEmployeeCreated={handleEmployeeCreated}
             />
@@ -326,25 +326,25 @@ export default function EmployeesPage() {
         <section className="employeeDirectoryBlock">
           <header className="employeeDirectoryHeader">
             <div className="employeeBlockHeading">
-              <span>02</span>
+              <span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="9" cy="9" r="2" /><path d="M5 17v-1a4 4 0 0 1 8 0v1m2-9h3m-3 4h3m-3 4h3" /></svg></span>
               <div>
-                <p>Directory</p>
-                <h2>{total} active employees</h2>
+                <p>{t("Directory")}</p>
+                <h2>{total}{t(" active employees")}</h2>
               </div>
             </div>
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search name, email or phone"
-              aria-label="Search employees"
+              placeholder={t("Search name, email or phone")}
+              aria-label={t("Search employees")}
             />
           </header>
 
-          {loading ? <p className="formNotice">Loading employees...</p> : null}
+          {loading ? <p className="formNotice">{t("Loading employees...")}</p> : null}
           {!loading && filteredEmployees.length === 0 ? (
             <div className="employeeEmptyState">
-              <strong>No matching employees</strong>
-              <span>Invite a new employee or adjust your search.</span>
+              <strong>{t("No matching employees")}</strong>
+              <span>{t("Invite a new employee or adjust your search.")}</span>
             </div>
           ) : null}
           <div className="employeeModernList">
@@ -362,28 +362,28 @@ export default function EmployeesPage() {
                       <strong>
                         {employee.firstName} {employee.lastName}
                       </strong>
-                      <small>{employee.user.email}</small>
+                      <small>{employee.loginCode ? `ID ${employee.loginCode}` : employee.user.email}</small>
                     </div>
                   </div>
                   <div className="employeeModernFacts">
                     <span>
-                      <small>Phone</small>
+                      <small>{t("Phone")}</small>
                       <strong>{employee.phone || "Not provided"}</strong>
                     </span>
                     <span>
-                      <small>Hourly rate</small>
+                      <small>{t("Hourly rate")}</small>
                       <strong>
                         {employee.hourlyRate
                           ? `€${employee.hourlyRate}/h`
-                          : "Not set"}
+                          : t("Not set")}
                       </strong>
                     </span>
                     <span>
-                      <small>Profile</small>
+                      <small>{t("Profile")}</small>
                       <strong>
                         {employee.isStudent
-                          ? "Student · 80h insight"
-                          : "Standard employee"}
+                          ? t("Student · 10h/week · 40h/month")
+                          : t("Standard employee")}
                       </strong>
                     </span>
                   </div>
@@ -391,55 +391,52 @@ export default function EmployeesPage() {
                     <span
                       className={`employeeState employeeState${employee.user.status}`}
                     >
-                      {employee.user.status.toLowerCase()}
+                      {t(employee.user.status.toLowerCase())}
                     </span>
                   </div>
                   <div className="employeeModernActions">
                     <button
                       type="button"
+                      aria-pressed={analysingEmployee?.id === employee.id}
                       onClick={() => setAnalysingEmployee(employee)}
-                    >
-                      View analysis
-                    </button>
+                    >{t("View analysis")}</button>
                     <button
                       type="button"
                       disabled={exportingStatement === employee.id}
+                      aria-busy={exportingStatement === employee.id}
                       onClick={() => void exportPaymentStatement(employee)}
                     >
                       {exportingStatement === employee.id
-                        ? "Preparing PDF..."
-                        : "Export statement"}
+                        ? t("Preparing PDF...")
+                        : t("Export internal statement")}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditingEmployee(employee)}
-                    >
-                      Edit profile
-                    </button>
-                    {invited ? (
+                    {session?.user.role === "ADMIN" || !employee.user.role || employee.user.role === "EMPLOYEE" ? <button type="button" aria-pressed={editingEmployee?.id === employee.id} onClick={() => setEditingEmployee(employee)}>{t("Edit profile")}</button> : null}
+                    {employee.isStudent ? <button type="button" aria-expanded={creditEmployee?.id === employee.id} aria-controls={`student-credit-${employee.id}`} onClick={() => setCreditEmployee((current) => current?.id === employee.id ? null : employee)}>{t("Credit preview / closure")}</button> : null}
+                    {invited && session?.user.role === "ADMIN" ? (
                       <button
                         type="button"
                         disabled={resettingEmployeeId === employee.id}
                         onClick={() => void resetInvitation(employee)}
                       >
                         {resettingEmployeeId === employee.id
-                          ? "Generating..."
-                          : "Reset invitation"}
+                          ? t("Generating...")
+                          : t("Reset invitation")}
                       </button>
                     ) : null}
-                    <button
+                    {session?.user.role === "ADMIN" ? <button
                       className="employeeDeleteButton"
                       type="button"
+                      aria-pressed={employeeToDelete?.id === employee.id}
                       onClick={() => setEmployeeToDelete(employee)}
-                    >
-                      Delete
-                    </button>
+                    ><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" /></svg>{t("Delete")}</button> : null}
                   </div>
-                  {invited && invitation?.developmentInvitationUrl ? (
+                  {creditEmployee?.id === employee.id && session ? <StudentCreditPanel key={`${employee.id}-${statementMonth}`} employee={employee} month={statementMonth} accessToken={session.accessToken} onClose={() => setCreditEmployee(null)} /> : null}
+                  {session?.user.role === "ADMIN" ? <EmployeeAccessControl employee={employee} onUpdated={handleEmployeeUpdated} /> : null}
+                  {invited && (invitation?.invitationUrl || invitation?.developmentInvitationUrl) ? (
                     <div className="employeeCardInvitation">
                       <InvitationLinkPanel
                         compact
-                        url={invitation.developmentInvitationUrl}
+                        url={invitation.invitationUrl ?? invitation.developmentInvitationUrl!}
                         expiresAt={invitation.expiresAt}
                       />
                     </div>
@@ -459,6 +456,7 @@ export default function EmployeesPage() {
           }}
         >
           <EmployeeEditDialog
+            canResetPassword={session.user.role === "ADMIN"}
             accessToken={session.accessToken}
             employee={editingEmployee}
             onClose={() => setEditingEmployee(null)}
@@ -488,22 +486,18 @@ export default function EmployeesPage() {
             role="alertdialog"
             aria-modal="true"
           >
-            <span>Archive employee</span>
-            <h2>Remove {employeeToDelete.firstName} from the active team?</h2>
-            <p>
-              The account will lose access, but completed assignments and
-              payroll history will remain available.
-            </p>
+            <span>{t("Archive employee")}</span>
+            <h2>{t("Remove ")}{employeeToDelete.firstName}{t(" from the active team?")}</h2>
+            <p>{t("The account will lose access, but completed assignments and payroll history will remain available.")}</p>
+            <p>{t("Future or ongoing assignments must be reassigned or cancelled first. Archived history is available to administrators in Archive.")}</p>
             <div>
-              <button type="button" onClick={() => setEmployeeToDelete(null)}>
-                Keep employee
-              </button>
+              <button type="button" onClick={() => setEmployeeToDelete(null)}>{t("Keep employee")}</button>
               <button
                 type="button"
                 disabled={deleting}
                 onClick={() => void archiveEmployee()}
               >
-                {deleting ? "Removing..." : "Remove access"}
+                {deleting ? t("Removing...") : t("Remove access")}
               </button>
             </div>
           </section>
